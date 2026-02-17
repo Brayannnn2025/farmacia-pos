@@ -9,6 +9,14 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ✅ FRONTEND: servir archivos estáticos (HTML/CSS/JS) desde /frontend
+app.use("/", express.static(path.join(__dirname, "../frontend")));
+
+// ✅ HOME: cuando entren a "/" abrir login.html
+app.get("/", (_req, res) => {
+  return res.sendFile(path.join(__dirname, "../frontend/login.html"));
+});
+
 const DB_PATH = path.join(__dirname, "db.sqlite");
 const db = new sqlite3.Database(DB_PATH);
 
@@ -153,15 +161,8 @@ async function init() {
   console.log("✅ DB lista:", DB_PATH);
 }
 
-app.get("/health", (_, res) => res.json({ ok: true }));
-
-// ✅ (Opcional) root informativo (evita el "Cannot GET /" que te confundía)
-app.get("/", (_, res) => {
-  res.json({
-    ok: true,
-    message: "API POS Farmacia. Usa /health y /api/*",
-  });
-});
+// ✅ health
+app.get("/health", (_req, res) => res.json({ ok: true }));
 
 // -------------------- AUTH --------------------
 app.post("/api/login", async (req, res) => {
@@ -184,13 +185,11 @@ app.post("/api/login", async (req, res) => {
 });
 
 // -------------------- USERS (ADMIN) --------------------
-// Listar usuarios
 app.get("/api/users", auth, requireRole("admin"), async (_req, res) => {
   const rows = await all(`SELECT id, username, role FROM users ORDER BY id ASC`);
   res.json(rows);
 });
 
-// Crear usuario (admin o cajero)
 app.post("/api/users", auth, requireRole("admin"), async (req, res) => {
   const { username, password, role } = req.body || {};
   const u = String(username || "").trim();
@@ -211,7 +210,6 @@ app.post("/api/users", auth, requireRole("admin"), async (req, res) => {
   }
 });
 
-// Eliminar usuario
 app.delete("/api/users/:id", auth, requireRole("admin"), async (req, res) => {
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ error: "ID inválido" });
@@ -221,7 +219,6 @@ app.delete("/api/users/:id", auth, requireRole("admin"), async (req, res) => {
   const user = await get(`SELECT id, username, role FROM users WHERE id=?`, [id]);
   if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
 
-  // Evitar eliminar el último admin
   if (user.role === "admin") {
     const admins = await get(`SELECT COUNT(*) as c FROM users WHERE role='admin'`);
     if ((admins?.c || 0) <= 1) return res.status(400).json({ error: "No puedes eliminar el último admin" });
@@ -313,7 +310,6 @@ app.delete("/api/products/:id", auth, requireRole("admin"), async (req, res) => 
 });
 
 // -------------------- SALES --------------------
-// Registrar venta (bloquear vencidos)
 app.post("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) => {
   const { items, payment_method = "efectivo" } = req.body || {};
   if (!Array.isArray(items) || items.length === 0) {
@@ -322,7 +318,6 @@ app.post("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) =>
 
   let total = 0;
 
-  // Validación: stock + vencimiento
   for (const it of items) {
     const pid = Number(it.product_id);
     const qty = Number(it.qty);
@@ -341,7 +336,6 @@ app.post("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) =>
     total += price_unit * qty;
   }
 
-  // Insert sale
   const iso = isoNow();
   const saleR = await run(
     `INSERT INTO sales(date,total,payment_method,seller_user_id) VALUES(?,?,?,?)`,
@@ -349,7 +343,6 @@ app.post("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) =>
   );
   const sale_id = saleR.id;
 
-  // Insert items + update stock
   for (const it of items) {
     const pid = Number(it.product_id);
     const qty = Number(it.qty);
@@ -377,12 +370,11 @@ app.post("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) =>
   res.json({ sale, items: saleItems });
 });
 
-// Historial (fechas ISO guardadas como texto)
 app.get("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 100), 500);
 
-  const from = (req.query.from || "").trim(); // YYYY-MM-DD
-  const to = (req.query.to || "").trim();     // YYYY-MM-DD
+  const from = (req.query.from || "").trim();
+  const to = (req.query.to || "").trim();
 
   let sql = `SELECT id, date, total, payment_method FROM sales`;
   const params = [];
@@ -405,7 +397,6 @@ app.get("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) => 
   res.json(rows);
 });
 
-// Detalle venta (reimprimir)
 app.get("/api/sales/:id", auth, requireRole("admin", "cajero"), async (req, res) => {
   const id = Number(req.params.id);
 
@@ -427,11 +418,9 @@ app.get("/api/sales/:id", auth, requireRole("admin", "cajero"), async (req, res)
   res.json({ sale, items });
 });
 
-// -------------------- ALERTAS (opcional, útil) --------------------
-// Productos que vencen en N días (incluye vencidos si days >= 0)
+// -------------------- ALERTAS --------------------
 app.get("/api/alerts/expiring", auth, requireRole("admin", "cajero"), async (req, res) => {
   const days = Math.max(0, Number(req.query.days || 30));
-  // Ordena por fecha de vencimiento asc
   const rows = await all(
     `
     SELECT id, code, name, stock, expiry_date, location
@@ -447,5 +436,8 @@ app.get("/api/alerts/expiring", auth, requireRole("admin", "cajero"), async (req
 
 const PORT = 3000;
 init().then(() => {
-  app.listen(PORT, () => console.log(`✅ Backend corriendo en http://localhost:${PORT}`));
+  // ✅ IMPORTANTE: 0.0.0.0 para que sea accesible desde fuera (IP pública)
+  app.listen(PORT, "0.0.0.0", () =>
+    console.log(`✅ Backend corriendo en http://0.0.0.0:${PORT}`)
+  );
 });
