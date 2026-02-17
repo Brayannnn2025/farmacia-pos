@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Inicio | POS Farmacia</title>
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+<header>
+  <div class="brand">POS Farmacia</div>
+  <div class="right">
+    <span id="who" class="small"></span>
+    <button class="secondary" onclick="logout()">Salir</button>
+  </div>
+</header>
+
+<div class="container">
+  <section class="card">
+    <h2>Menú</h2>
+    <div id="menu" class="row" style="flex-wrap:wrap; gap:10px;"></div>
+    <p class="small" style="margin-top:10px;">Verás solo lo que te corresponde según tu rol.</p>
+  </section>
+
+  <section class="card" style="margin-top:14px;">
+    <h2>Alertas de vencimiento</h2>
+    <div class="row" style="gap:10px; align-items:center;">
+      <label class="small">Próximos</label>
+      <input id="days" type="number" min="1" max="365" value="30" style="width:110px"/>
+      <button id="btnAlerts" class="secondary">Ver alertas</button>
+    </div>
+    <div id="alerts" style="margin-top:10px;"></div>
+  </section>
+</div>
+
+<script src="app.js"></script>
+<script>
+  if (!token()) location.href="login.html";
+
+  const u = currentUser();
+  document.getElementById("who").textContent = u ? `Usuario: ${u.username} (${u.role})` : "";
+
+  function addBtn(text, href) {
+    const a = document.createElement("a");
+    a.className = "link";
+    a.href = href;
+    a.style.padding = "10px 12px";
+    a.style.border = "1px solid #e5e7eb";
+    a.style.borderRadius = "10px";
+    a.style.background = "white";
+    a.textContent = text;
+    return a;
+  }
+
+  function renderMenu() {
+    const menu = document.getElementById("menu");
+    menu.innerHTML = "";
+
+    // Todos
+    menu.appendChild(addBtn("🧾 Caja (Ventas)", "pos.html"));
+    menu.appendChild(addBtn("📊 Historial de ventas", "ventas.html"));
+
+    if (u?.role === "admin") {
+      menu.appendChild(addBtn("📦 Inventario / Productos", "admin_productos.html"));
+      menu.appendChild(addBtn("👥 Usuarios", "usuarios.html"));
+    } else {
+      // cajero: si quieres permitir inventario solo lectura, luego lo hacemos
+      // menu.appendChild(addBtn("📦 Inventario (solo ver)", "inventario.html"));
+    }
+  }
+
+  function badge(text, colorBg, colorText) {
+    return `<span class="badge" style="background:${colorBg};color:${colorText};margin-left:8px;">${text}</span>`;
+  }
+
+  async function loadAlerts() {
+    const days = Number(document.getElementById("days").value || 30);
+    const box = document.getElementById("alerts");
+    box.innerHTML = "Cargando...";
+
+    try {
+      const r = await api(`/api/alerts/expiring?days=${encodeURIComponent(days)}`);
+      if (!r.items || r.items.length === 0) {
+        box.innerHTML = `<div class="small">✅ No hay productos por vencer en ${days} días.</div>`;
+        return;
+      }
+
+      box.innerHTML = `
+        <div class="small">⚠️ ${r.count} productos por vencer (≤ ${days} días)</div>
+        <table class="table" style="margin-top:10px;">
+          <thead><tr><th>Código</th><th>Producto</th><th>Stock</th><th>Vence</th><th>Ubicación</th></tr></thead>
+          <tbody>
+            ${r.items.map(p => {
+              const exp = p.expiry_date || "";
+              return `
+                <tr>
+                  <td>${p.code}</td>
+                  <td>${p.name}</td>
+                  <td><span class="badge">${p.stock}</span></td>
+                  <td>
+                    ${exp}
+                    ${exp ? badge("POR VENCER", "#FEF3C7", "#92400E") : ""}
+                  </td>
+                  <td>${p.location || ""}</td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      `;
+    } catch (e) {
+      console.error(e);
+      box.innerHTML = `<div class="small" style="color:#ef4444">Error cargando alertas.</div>`;
+    }
+  }
+
+  document.getElementById("btnAlerts").onclick = loadAlerts;
+
+  renderMenu();
+  loadAlerts();
+</script>
+</body>
+</html>

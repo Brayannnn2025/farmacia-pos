@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Caja | POS Farmacia</title>
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+<header>
+  <div class="brand">
+    Caja (POS) <span class="badge" id="roleTag" style="margin-left:8px;"></span>
+  </div>
+
+  <div class="right">
+    <!-- Todos -->
+    <a class="link" href="pos.html" data-role="admin,cajero">Caja</a>
+    <a class="link" href="ventas.html" data-role="admin,cajero">Historial</a>
+
+    <!-- Solo admin -->
+    <a class="link" href="admin_productos.html" data-role="admin">Productos</a>
+    <a class="link" href="usuarios.html" data-role="admin">Usuarios</a>
+
+    <button class="secondary" onclick="logout()">Salir</button>
+  </div>
+</header>
+
+<div class="container grid">
+  <section class="card">
+    <h2>Productos</h2>
+    <div class="row">
+      <input id="search" placeholder="Buscar por nombre o código..." />
+      <button class="secondary" id="btnReload">Recargar</button>
+    </div>
+    <p class="small">Haz clic para agregar al carrito.</p>
+
+    <table class="table">
+      <thead>
+        <tr><th>Código</th><th>Producto</th><th>Stock</th><th>P.Venta</th><th></th></tr>
+      </thead>
+      <tbody id="products"></tbody>
+    </table>
+  </section>
+
+  <aside class="card">
+    <h2>Carrito</h2>
+    <div id="cart"></div>
+
+    <hr/>
+    <div class="row" style="align-items:center;justify-content:space-between">
+      <div class="total">Total: S/ <span id="total">0.00</span></div>
+      <select id="payment">
+        <option value="efectivo">Efectivo</option>
+        <option value="yape">Yape</option>
+        <option value="plin">Plin</option>
+        <option value="tarjeta">Tarjeta</option>
+      </select>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <button id="btnSell">Vender + Ticket</button>
+      <button class="secondary" id="btnClear">Vaciar</button>
+    </div>
+
+    <p id="msg" class="small" style="color:#ef4444"></p>
+  </aside>
+</div>
+
+<!-- Ticket imprimible -->
+<div id="ticket" style="display:none;padding:16px;">
+  <h2>FARMACIA</h2>
+  <div class="small" id="ticketMeta"></div>
+  <hr/>
+  <div id="ticketItems"></div>
+  <hr/>
+  <h3>Total: S/ <span id="ticketTotal"></span></h3>
+  <p class="small">Gracias por su compra.</p>
+</div>
+
+<script src="app.js"></script>
+<script>
+  requireAuth(["admin","cajero"]);
+  applyRoleVisibility();
+</script>
+<script src="pos.js"></script>
+</body>
+</html>

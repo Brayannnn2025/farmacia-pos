@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Usuarios | POS Farmacia</title>
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+<header>
+  <div class="brand">
+    Usuarios <span class="badge" id="roleTag" style="margin-left:8px;"></span>
+  </div>
+  <div class="right">
+    <a class="link" href="pos.html" data-role="admin,cajero">Caja</a>
+    <a class="link" href="admin_productos.html" data-role="admin">Productos</a>
+    <a class="link" href="ventas.html" data-role="admin,cajero">Historial</a>
+    <button class="secondary" onclick="logout()">Salir</button>
+  </div>
+</header>
+
+<div class="container">
+  <section class="card">
+    <h2>Crear usuario</h2>
+    <div class="row">
+      <input id="username" placeholder="Usuario (único)" autocomplete="off"/>
+      <input id="password" placeholder="Contraseña" type="password" autocomplete="new-password"/>
+      <select id="roleSel">
+        <option value="cajero">cajero</option>
+        <option value="admin">admin</option>
+      </select>
+      <button id="btnCreate">Crear</button>
+    </div>
+    <p id="msg" class="small" style="color:#ef4444;margin-top:8px;"></p>
+    <p class="small" style="margin-top:8px;">
+      ⚠️ Recomendación: crea cajeros con rol <b>cajero</b>.  
+      Solo admins pueden administrar usuarios y productos.
+    </p>
+  </section>
+
+  <section class="card" style="margin-top:14px;">
+    <h2>Lista</h2>
+    <table class="table" style="margin-top:10px;">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Usuario</th>
+          <th>Rol</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </section>
+</div>
+
+<script src="app.js"></script>
+<script>
+  requireAuth(["admin"]);
+  applyRoleVisibility();
+</script>
+<script src="usuarios.js"></script>
+</body>
+</html>

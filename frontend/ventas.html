@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Historial de ventas | POS Farmacia</title>
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+<header>
+  <div class="brand">
+    Historial de ventas <span class="badge" id="roleTag" style="margin-left:8px;"></span>
+  </div>
+  <div class="right">
+    <a class="link" href="pos.html" data-role="admin,cajero">Caja</a>
+    <a class="link" href="admin_productos.html" data-role="admin">Productos</a>
+    <a class="link" href="usuarios.html" data-role="admin">Usuarios</a>
+    <button class="secondary" onclick="logout()">Salir</button>
+  </div>
+</header>
+
+<div class="container">
+  <section class="card">
+    <h2>Filtro</h2>
+    <div class="row">
+      <input id="from" type="date" />
+      <input id="to" type="date" />
+      <button class="secondary" id="btnLoad">Buscar</button>
+      <button id="btnToday">Hoy</button>
+    </div>
+    <p id="msg" class="small" style="color:#ef4444;margin-top:8px;"></p>
+  </section>
+
+  <section class="card" style="margin-top:14px;">
+    <h2>Ventas</h2>
+    <table class="table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Fecha</th>
+          <th>Pago</th>
+          <th>Total</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </section>
+</div>
+
+<!-- Modal -->
+<div id="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.35); padding:30px; overflow:auto;">
+  <div class="card" style="max-width:900px; margin:auto;">
+    <div class="row" style="justify-content:space-between; align-items:center;">
+      <h2>Detalle de venta</h2>
+      <button class="secondary" id="btnClose">Cerrar</button>
+    </div>
+    <p id="meta" class="small"></p>
+    <div id="items"></div>
+    <hr/>
+    <div class="row" style="justify-content:space-between;align-items:center;">
+      <div class="total">Total: S/ <span id="total">0.00</span></div>
+      <button id="btnPrint">Reimprimir ticket</button>
+    </div>
+
+    <div id="ticket" style="display:none;">
+      <div style="font-family:Arial;padding:10px;">
+        <h2 style="margin:0;">FARMACIA</h2>
+        <div id="ticketMeta" class="small" style="margin:6px 0;"></div>
+        <hr/>
+        <div id="ticketItems"></div>
+        <hr/>
+        <h3 style="margin:8px 0;">Total: S/ <span id="ticketTotal">0.00</span></h3>
+        <div class="small">Gracias por su compra.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+  requireAuth(["admin","cajero"]);
+  applyRoleVisibility();
+</script>
+<script src="ventas.js"></script>
+</body>
+</html>

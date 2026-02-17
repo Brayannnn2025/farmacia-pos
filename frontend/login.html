@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Login | POS Farmacia</title>
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+<header>
+  <div class="brand">POS Farmacia (Local)</div>
+  <div class="small">Una sola PC · Sin internet</div>
+</header>
+
+<div class="container">
+  <div class="card" style="max-width:480px;margin:40px auto;">
+    <h2>Iniciar sesión</h2>
+    <p class="small">Usuario por defecto: <b>admin</b> · Clave: <b>admin123</b></p>
+
+    <div class="row">
+      <input id="username" placeholder="Usuario" autocomplete="username"/>
+      <input id="password" placeholder="Contraseña" type="password" autocomplete="current-password"/>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <button id="btnLogin">Entrar</button>
+    </div>
+
+    <p id="msg" class="small" style="color:#ef4444"></p>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+  // si ya está logueado -> a su home según rol
+  if (token()) location.href = homeForRole();
+
+  async function doLogin(){
+    $("msg").textContent = "";
+    $("btnLogin").disabled = true;
+    $("btnLogin").textContent = "Entrando...";
+
+    try{
+      const username = $("username").value.trim();
+      const password = $("password").value.trim();
+
+      const r = await api("/api/login", {
+        method:"POST",
+        body: JSON.stringify({ username, password })
+      });
+
+      localStorage.setItem("token", r.token);
+      setUser(r.user);
+
+      // ✅ redirige según rol
+      location.href = homeForRole();
+
+    }catch(e){
+      $("msg").textContent = e.message;
+    }finally{
+      $("btnLogin").disabled = false;
+      $("btnLogin").textContent = "Entrar";
+    }
+  }
+
+  $("btnLogin").onclick = doLogin;
+
+  // Enter para login rápido
+  $("password").addEventListener("keydown", (ev)=>{
+    if(ev.key === "Enter") doLogin();
+  });
+</script>
+</body>
+</html>
