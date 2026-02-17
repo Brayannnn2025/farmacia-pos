@@ -1,5 +1,9 @@
 // app.js
-const API = "http://localhost:3000";
+
+// ✅ API automática:
+// - Si abres desde EC2:  http://35.x.x.x:3000  -> usa esa misma
+// - Si abres en tu PC local: http://localhost:3000 -> usa localhost
+const API = window.location.origin;
 
 // Helper DOM (NO redeclarar $ en otros .js)
 function $(id) { return document.getElementById(id); }
@@ -38,14 +42,12 @@ function requireAuth(allowedRoles = null) {
   if (Array.isArray(allowedRoles) && allowedRoles.length > 0) {
     const r = role();
     if (!allowedRoles.includes(r)) {
-      // si no tiene permiso, lo mandamos a su home
       location.href = homeForRole();
     }
   }
 }
 
 // Mostrar/ocultar elementos por rol usando data-role
-// Ej: <a data-role="admin">...</a> o <div data-role="admin,cajero">
 function applyRoleVisibility() {
   const r = role();
   document.querySelectorAll("[data-role]").forEach(el => {
@@ -55,7 +57,6 @@ function applyRoleVisibility() {
     el.style.display = allowed.includes(r) ? "" : "none";
   });
 
-  // (opcional) mostrar rol en la UI si existe un span#roleTag
   const tag = document.getElementById("roleTag");
   if (tag) tag.textContent = r ? r.toUpperCase() : "";
 }
@@ -63,7 +64,6 @@ function applyRoleVisibility() {
 async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
 
-  // Si mandas body JSON, metemos Content-Type
   if (opts.body && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
@@ -71,9 +71,11 @@ async function api(path, opts = {}) {
   const t = token();
   if (t) headers["Authorization"] = "Bearer " + t;
 
-  const res = await fetch(API + path, { ...opts, headers });
+  // ✅ importante: path debe empezar con "/"
+  const url = API + path;
 
-  // Parse seguro (por si viene texto)
+  const res = await fetch(url, { ...opts, headers });
+
   const text = await res.text();
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
