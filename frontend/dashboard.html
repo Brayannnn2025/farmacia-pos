@@ -25,6 +25,9 @@
     .actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
     .btn2{padding:10px 12px;border-radius:12px;border:1px solid #e5e7eb;background:#fff;font-weight:700;cursor:pointer}
     .btn2.primary{background:#0ea5e9;border-color:#0ea5e9;color:#fff}
+    .btn2.ghost{background:#fff}
+    .barExport{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:10px}
+    .barExport input{padding:10px 12px;border-radius:12px;border:1px solid #e5e7eb;background:#fff}
   </style>
 </head>
 <body>
@@ -49,7 +52,7 @@
     <div class="kpi">
       <div class="t">Ventas (Hoy)</div>
       <div class="v" id="kpiSalesToday">—</div>
-      <div class="s" id="kpiSalesTodayS">Total S/</div>
+      <div class="s">Total S/</div>
     </div>
     <div class="kpi">
       <div class="t">Transacciones (Hoy)</div>
@@ -72,8 +75,26 @@
     <button class="btn2 primary" onclick="location.href='pos.html'">Ir a Caja</button>
     <button class="btn2" onclick="location.href='admin_productos.html'" data-role="admin">Gestionar Productos</button>
     <button class="btn2" onclick="location.href='ventas.html'">Ver Historial</button>
-    <button class="btn2" onclick="downloadExcel('/api/export/products.xlsx','inventario.xlsx')" data-role="admin">Excel Inventario</button>
-    <button class="btn2" onclick="downloadExcel('/api/export/sales.xlsx','ventas.xlsx')">Excel Ventas</button>
+  </div>
+
+  <!-- ✅ EXPORTS: 1 clic -->
+  <div class="card" style="margin-top:14px;">
+    <h2>Exportar Excel</h2>
+    <div class="small">Inventario completo o ventas por rango.</div>
+
+    <div class="barExport">
+      <button class="btn2" id="btnExcelInv" data-role="admin">Excel Inventario</button>
+
+      <input id="salesFrom" type="date"/>
+      <input id="salesTo" type="date"/>
+
+      <button class="btn2" id="btnExcelSales">Excel Ventas</button>
+      <button class="btn2 ghost" id="btnToday">Hoy</button>
+      <button class="btn2 ghost" id="btn7d">Últ. 7 días</button>
+      <button class="btn2 ghost" id="btnMonth">Este mes</button>
+
+      <span class="small" id="exportMsg" style="margin-left:6px;"></span>
+    </div>
   </div>
 
   <div class="grid2" style="margin-top:14px;">
@@ -110,49 +131,160 @@
   requireAuth(["admin","cajero"]);
   applyRoleVisibility();
 
-  const LOW_LIMIT = 5;
-  const EXP_DAYS = 30;
+  const LOW_LIMIT = 5;   // umbral stock bajo
+  const EXP_DAYS  = 30;  // días para "por vencer"
+
+  const msg = (t="", ok=true)=>{
+    const el = document.getElementById("exportMsg");
+    if(!el) return;
+    el.textContent = t;
+    el.style.color = ok ? "#16a34a" : "#ef4444";
+  };
 
   function badge(text, cls){ return `<span class="badge ${cls||''}">${text}</span>`; }
 
-  async function loadDashboard(){
-    // KPIs
-    const sum = await api(`/api/dashboard/summary?low=${LOW_LIMIT}&days=${EXP_DAYS}`);
-    $("kpiSalesToday").textContent = "S/ " + money(sum.sales_today_total || 0);
-    $("kpiTxToday").textContent = String(sum.sales_today_count || 0);
-    $("kpiLow").textContent = String(sum.low_stock_count || 0);
-    $("kpiExp").textContent = String(sum.expiring_count || 0);
-
-    // Low stock list
-    const low = await api(`/api/alerts/low-stock?limit=${LOW_LIMIT}`);
-    $("lowInfo").textContent = `Mostrando ${low.count} productos con stock < ${LOW_LIMIT}`;
-    $("lowBody").innerHTML = low.items.map(p=>{
-      const cls = (p.stock<=0) ? "danger" : "warn";
-      const st = (p.stock<=0) ? badge("SIN STOCK", "danger") : badge("BAJO", "warn");
-      return `<tr>
-        <td>${p.code}</td>
-        <td>${p.name}</td>
-        <td><b>${p.stock}</b></td>
-        <td>${p.location||""}</td>
-        <td>${st}</td>
-      </tr>`;
-    }).join("") || `<tr><td colspan="5" class="small">Sin alertas ✅</td></tr>`;
-
-    // Expiring list
-    const exp = await api(`/api/alerts/expiring?days=${EXP_DAYS}`);
-    $("expInfo").textContent = `Vencen dentro de ${EXP_DAYS} días: ${exp.count}`;
-    $("expBody").innerHTML = exp.items.slice(0,50).map(p=>{
-      const cls = p.is_expired ? "danger" : "warn";
-      const st = p.is_expired ? badge("VENCIDO", "danger") : badge("POR VENCER", "warn");
-      return `<tr>
-        <td>${p.code}</td>
-        <td>${p.name}</td>
-        <td><b>${p.expiry_date}</b></td>
-        <td>${p.location||""}</td>
-        <td>${st}</td>
-      </tr>`;
-    }).join("") || `<tr><td colspan="5" class="small">Sin alertas ✅</td></tr>`;
+  function todayISO(){
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth()+1).padStart(2,"0");
+    const dd = String(d.getDate()).padStart(2,"0");
+    return `${yyyy}-${mm}-${dd}`;
   }
+
+  function addDaysISO(days){
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth()+1).padStart(2,"0");
+    const dd = String(d.getDate()).padStart(2,"0");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  function firstDayOfMonthISO(){
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth()+1).padStart(2,"0");
+    return `${yyyy}-${mm}-01`;
+  }
+
+  async function loadDashboard(){
+    // ✅ KPIs (usa /api/dashboard/summary del backend)
+    const sum = await api(`/api/dashboard/summary?threshold=${LOW_LIMIT}&days=${EXP_DAYS}`);
+
+    document.getElementById("kpiSalesToday").textContent =
+      "S/ " + money(sum?.today?.total || 0);
+
+    document.getElementById("kpiTxToday").textContent =
+      String(sum?.today?.count || 0);
+
+    document.getElementById("kpiLow").textContent =
+      String(sum?.low_stock?.count || 0);
+
+    document.getElementById("kpiExp").textContent =
+      String(sum?.expiring?.count || 0);
+
+    // ✅ Low stock list
+    const low = await api(`/api/alerts/low-stock?threshold=${LOW_LIMIT}`);
+    document.getElementById("lowInfo").textContent =
+      `Mostrando ${low.count} productos con stock < ${LOW_LIMIT}`;
+
+    document.getElementById("lowBody").innerHTML =
+      (low.items || []).map(p=>{
+        const st = (Number(p.stock)<=0) ? badge("SIN STOCK", "danger") : badge("BAJO", "warn");
+        return `<tr>
+          <td>${p.code}</td>
+          <td>${p.name}</td>
+          <td><b>${p.stock}</b></td>
+          <td>${p.location||""}</td>
+          <td>${st}</td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="5" class="small">Sin alertas ✅</td></tr>`;
+
+    // ✅ Expiring list
+    const exp = await api(`/api/alerts/expiring?days=${EXP_DAYS}`);
+    document.getElementById("expInfo").textContent =
+      `Vencen dentro de ${EXP_DAYS} días: ${exp.count}`;
+
+    document.getElementById("expBody").innerHTML =
+      (exp.items || []).slice(0,50).map(p=>{
+        // backend devuelve expiry_date; si quieres "VENCIDO" real: lo marcamos comparando fechas
+        const isExpired = p.expiry_date && (new Date(p.expiry_date+"T00:00:00").getTime() < new Date(new Date().toISOString().slice(0,10)+"T00:00:00").getTime());
+        const st = isExpired ? badge("VENCIDO", "danger") : badge("POR VENCER", "warn");
+        return `<tr>
+          <td>${p.code}</td>
+          <td>${p.name}</td>
+          <td><b>${p.expiry_date || ""}</b></td>
+          <td>${p.location||""}</td>
+          <td>${st}</td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="5" class="small">Sin alertas ✅</td></tr>`;
+  }
+
+  // =======================
+  // EXPORT 1 clic ✅
+  // =======================
+  const fromEl = document.getElementById("salesFrom");
+  const toEl   = document.getElementById("salesTo");
+
+  function setRange(from, to){
+    fromEl.value = from;
+    toEl.value = to;
+  }
+
+  // Por defecto HOY
+  const t = todayISO();
+  setRange(t, t);
+
+  document.getElementById("btnExcelInv").onclick = async () => {
+    try{
+      msg("Generando inventario...", true);
+      // ✅ endpoint que vas a crear en backend: /api/export/inventory.xlsx
+      await downloadExcel(`/api/export/inventory.xlsx`, `inventario_${todayISO()}.xlsx`);
+      msg("✅ Inventario descargado.", true);
+    }catch(e){
+      console.error(e);
+      msg("❌ No se pudo descargar inventario: " + e.message, false);
+    }
+  };
+
+  document.getElementById("btnExcelSales").onclick = async () => {
+    try{
+      const from = fromEl.value;
+      const to   = toEl.value;
+      if(!from || !to) return msg("❌ Selecciona fechas válidas.", false);
+
+      msg("Generando ventas...", true);
+      // ✅ endpoint que vas a crear en backend: /api/export/sales.xlsx?from=...&to=...
+      await downloadExcel(
+        `/api/export/sales.xlsx?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+        `ventas_${from}_a_${to}.xlsx`
+      );
+      msg("✅ Ventas descargadas.", true);
+    }catch(e){
+      console.error(e);
+      msg("❌ No se pudo descargar ventas: " + e.message, false);
+    }
+  };
+
+  document.getElementById("btnToday").onclick = () => {
+    const t = todayISO();
+    setRange(t, t);
+    msg("Rango: HOY", true);
+  };
+
+  document.getElementById("btn7d").onclick = () => {
+    const to = todayISO();
+    const from = addDaysISO(-6); // incluye hoy = 7 días
+    setRange(from, to);
+    msg("Rango: Últimos 7 días", true);
+  };
+
+  document.getElementById("btnMonth").onclick = () => {
+    const from = firstDayOfMonthISO();
+    const to = todayISO();
+    setRange(from, to);
+    msg("Rango: Este mes", true);
+  };
 
   loadDashboard().catch(e=>alert(e.message));
 </script>
