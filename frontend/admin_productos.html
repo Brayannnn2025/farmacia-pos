@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Productos | POS Farmacia</title>
   <link rel="stylesheet" href="styles.css"/>
+  <style>
+    .actions-top{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .pill{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;border:1px solid #e5e7eb;background:#fff}
+    .pill b{font-weight:800}
+    .pill.warn{background:#fffbeb;border-color:#fde68a;color:#92400e}
+    .pill.danger{background:#fff1f2;border-color:#fecdd3;color:#9f1239}
+    .table td .small{margin-top:4px}
+    .muted{color:#64748b}
+  </style>
 </head>
 <body>
 <header>
@@ -13,6 +22,7 @@
   </div>
 
   <div class="right">
+    <a class="link" href="dashboard.html">Dashboard</a>
     <a class="link" href="pos.html">Caja</a>
     <a class="link" href="ventas.html">Historial</a>
     <a class="link" href="usuarios.html" data-role="admin">Usuarios</a>
@@ -21,10 +31,34 @@
 </header>
 
 <div class="container">
+
+  <!-- ✅ ALERTAS + ACCIONES -->
+  <div class="card" style="margin-bottom:14px;" data-role="admin">
+    <div class="row" style="justify-content:space-between;align-items:center;gap:12px;">
+      <div>
+        <h2 style="margin-bottom:6px;">Alertas rápidas</h2>
+        <div class="small muted">Stock bajo y exportación para Excel (impacto comercial inmediato).</div>
+      </div>
+
+      <div class="actions-top">
+        <button class="btn" id="btnExcelInv" data-role="admin">Excel Inventario</button>
+        <a class="btn" href="dashboard.html">Ver Dashboard</a>
+      </div>
+    </div>
+
+    <div style="margin-top:12px;" id="alertWrap">
+      <span class="pill" id="pillLow">⏳ Cargando alertas…</span>
+    </div>
+
+    <div class="small" style="margin-top:10px;color:#64748b;">
+      Regla: <b>Stock bajo</b> = productos con stock &lt; <b>5</b>
+    </div>
+  </div>
+
   <div class="card">
     <h2>Nuevo / Editar producto</h2>
     <p class="small">
-      Tip: usa un código simple (o código de barras).  
+      Tip: usa un código simple (o código de barras).
       <b>Alerta</b>: si un producto vence pronto, lo resaltaremos en la lista.
     </p>
 
@@ -85,6 +119,8 @@
 
   let products = [];
 
+  const LOW_LIMIT = 5;
+
   function daysTo(expiry) {
     if (!expiry) return null;
     const d = new Date(expiry + "T00:00:00");
@@ -117,12 +153,19 @@
         else venceBadge = `<span class="badge">${d} días</span>`;
       }
 
+      // Badge stock (más claro)
+      const stockBadge = (Number(p.stock) <= 0)
+        ? `<span class="badge" style="background:#ef4444;color:white;">${p.stock}</span>`
+        : (Number(p.stock) < LOW_LIMIT)
+          ? `<span class="badge" style="background:#f59e0b;color:white;">${p.stock}</span>`
+          : `<span class="badge">${p.stock}</span>`;
+
       tr.innerHTML = `
         <td>${p.code}</td>
         <td>${p.name} <div class="small">${p.lab||""}</div></td>
         <td>${p.location || ""}</td>
         <td>${venceTxt} ${venceBadge}</td>
-        <td><span class="badge">${p.stock}</span></td>
+        <td>${stockBadge}</td>
         <td>S/ ${money(p.sell_price)}</td>
         <td>
           <button class="secondary" onclick='edit(${p.id})'>Editar</button>
@@ -130,7 +173,7 @@
         </td>
       `;
 
-      // Resaltar fila
+      // Resaltar fila por vencimiento
       if (d !== null) {
         if (d < 0) tr.style.background = "rgba(239,68,68,0.10)";
         else if (d <= 30) tr.style.background = "rgba(245,158,11,0.10)";
@@ -162,6 +205,7 @@
     if(!confirm("¿Eliminar producto?")) return;
     await api("/api/products/"+id, { method:"DELETE" });
     await load();
+    await loadAlerts();
   }
 
   $("btnSave").onclick = async ()=>{
@@ -171,7 +215,7 @@
         code: $("code").value.trim(),
         name: $("name").value.trim(),
         lab: $("lab").value.trim(),
-        location: $("location").value.trim(), // ⬅️ nuevo
+        location: $("location").value.trim(),
         stock: Number($("stock").value||0),
         buy_price: Number($("buy_price").value||0),
         sell_price: Number($("sell_price").value||0),
@@ -186,6 +230,7 @@
       }
       clearForm();
       await load();
+      await loadAlerts();
     }catch(e){
       $("msg").textContent = e.message;
     }
@@ -206,7 +251,37 @@
   $("btnClear").onclick = clearForm;
   $("search").oninput = ()=>load();
 
+  // ✅ Excel inventario
+  const btnExcelInv = document.getElementById("btnExcelInv");
+  if (btnExcelInv) {
+    btnExcelInv.onclick = () => downloadExcel("/api/export/products.xlsx", "inventario.xlsx");
+  }
+
+  // ✅ Alertas stock bajo
+  function setPill(el, text, cls){
+    el.className = "pill " + (cls||"");
+    el.innerHTML = text;
+  }
+
+  async function loadAlerts(){
+    const pill = document.getElementById("pillLow");
+    try{
+      const low = await api(`/api/alerts/low-stock?limit=${LOW_LIMIT}`);
+      if ((low.count || 0) === 0){
+        setPill(pill, "✅ Sin stock bajo", "ok");
+      } else {
+        // muestra top 3
+        const top = (low.items||[]).slice(0,3).map(x=>`${x.name} (${x.stock})`).join(" · ");
+        const cls = (low.items||[]).some(x=>Number(x.stock)<=0) ? "danger" : "warn";
+        setPill(pill, `⚠️ Stock bajo: <b>${low.count}</b> · ${top}${low.count>3 ? "…" : ""}`, cls);
+      }
+    }catch(e){
+      setPill(pill, "⚠️ No se pudo cargar alertas", "warn");
+    }
+  }
+
   load();
+  loadAlerts();
 </script>
 </body>
 </html>
