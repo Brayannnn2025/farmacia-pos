@@ -5,20 +5,25 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const path = require("path");
 
-// ✅ Excel
-const ExcelJS = require("exceljs");
-
 const app = express();
 
-// ✅ CORS abierto (para demo). Si luego quieres “nivel empresa”, lo cerramos por dominios.
+// =========================
+// CONFIG
+// =========================
+
+// ⚠️ Si vas a usarlo público, mejor restringir CORS a tu dominio/IP
 app.use(cors());
 app.use(express.json());
 
 const DB_PATH = path.join(__dirname, "db.sqlite");
 const db = new sqlite3.Database(DB_PATH);
 
-// ✅ IMPORTANTE: en producción esto va en .env
-const JWT_SECRET = process.env.JWT_SECRET || "cambia_esto_por_algo_mas_largo_y_secreto";
+// ✅ IMPORTANTE: en producción real esto va en .env
+const JWT_SECRET = "cambia_esto_por_algo_mas_largo_y_secreto";
+
+// ✅ SERVIR FRONTEND (ESTO ES LO QUE TE FALTA)
+const FRONTEND_DIR = path.join(__dirname, "..", "frontend");
+app.use(express.static(FRONTEND_DIR));
 
 // Helpers sqlite -> promises
 function run(sql, params = []) {
@@ -77,7 +82,6 @@ function isExpired(expiry_date) {
   if (!expiry_date) return false;
   const d = new Date(expiry_date + "T00:00:00");
   if (isNaN(d.getTime())) return false;
-
   const today = new Date();
   const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
   const e0 = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
@@ -140,7 +144,7 @@ async function init() {
     )
   `);
 
-  // ✅ Migraciones
+  // Migraciones
   await ensureColumn("products", "location", "TEXT DEFAULT ''");
 
   // Crear admin por defecto si no existe
@@ -156,14 +160,19 @@ async function init() {
   console.log("✅ DB lista:", DB_PATH);
 }
 
+// =========================
+// RUTAS BASICAS
+// =========================
 app.get("/health", (_, res) => res.json({ ok: true }));
 
-app.get("/", (_, res) => {
-  res.json({
-    ok: true,
-    message: "API POS Farmacia. Usa /health y /api/*",
-  });
+// ✅ Root = login
+app.get("/", (_req, res) => {
+  return res.sendFile(path.join(FRONTEND_DIR, "login.html"));
 });
+
+// ✅ Si escribes /login o /dashboard sin .html (opcional)
+app.get("/login", (_req, res) => res.sendFile(path.join(FRONTEND_DIR, "login.html")));
+app.get("/dashboard", (_req, res) => res.sendFile(path.join(FRONTEND_DIR, "dashboard.html")));
 
 // -------------------- AUTH --------------------
 app.post("/api/login", async (req, res) => {
@@ -419,24 +428,8 @@ app.get("/api/sales/:id", auth, requireRole("admin", "cajero"), async (req, res)
 });
 
 // -------------------- ALERTAS --------------------
-
-// ✅ Stock bajo: stock < limit (por defecto 5)
-app.get("/api/alerts/low-stock", auth, requireRole("admin", "cajero"), async (req, res) => {
-  const limit = Math.max(1, Number(req.query.limit || 5));
-  const rows = await all(
-    `SELECT id, code, name, stock, location
-     FROM products
-     WHERE stock < ?
-     ORDER BY stock ASC, name ASC`,
-    [limit]
-  );
-  res.json({ limit, count: rows.length, items: rows });
-});
-
-// ✅ Vencimientos (ya lo tenías, pero le agregamos is_expired)
 app.get("/api/alerts/expiring", auth, requireRole("admin", "cajero"), async (req, res) => {
   const days = Math.max(0, Number(req.query.days || 30));
-
   const rows = await all(
     `
     SELECT id, code, name, stock, expiry_date, location
@@ -447,148 +440,10 @@ app.get("/api/alerts/expiring", auth, requireRole("admin", "cajero"), async (req
     `,
     [String(days)]
   );
-
-  const mapped = rows.map(r => ({
-    ...r,
-    is_expired: r.expiry_date ? isExpired(r.expiry_date) : false
-  }));
-
-  res.json({ days, count: mapped.length, items: mapped });
+  res.json({ days, count: rows.length, items: rows });
 });
 
-// ✅ Dashboard resumen
-app.get("/api/dashboard/summary", auth, requireRole("admin","cajero"), async (req, res) => {
-  const low = Math.max(1, Number(req.query.low || 5));
-  const days = Math.max(0, Number(req.query.days || 30));
-
-  const today = new Date();
-  const yyyy = today.getFullYear();
-  const mm = String(today.getMonth()+1).padStart(2,"0");
-  const dd = String(today.getDate()).padStart(2,"0");
-  const ymd = `${yyyy}-${mm}-${dd}`;
-
-  const salesToday = await get(
-    `SELECT COUNT(*) as c, COALESCE(SUM(total),0) as s
-     FROM sales
-     WHERE substr(date,1,10)=?`,
-    [ymd]
-  );
-
-  const lowStock = await get(
-    `SELECT COUNT(*) as c FROM products WHERE stock < ?`,
-    [low]
-  );
-
-  const exp = await get(
-    `
-    SELECT COUNT(*) as c
-    FROM products
-    WHERE expiry_date IS NOT NULL AND expiry_date != ''
-      AND julianday(expiry_date) - julianday(date('now')) <= ?
-    `,
-    [String(days)]
-  );
-
-  res.json({
-    date: ymd,
-    sales_today_count: salesToday?.c || 0,
-    sales_today_total: salesToday?.s || 0,
-    low_stock_count: lowStock?.c || 0,
-    expiring_count: exp?.c || 0,
-    low_limit: low,
-    exp_days: days
-  });
-});
-
-// -------------------- EXCEL EXPORTS --------------------
-
-// ✅ Excel Inventario (admin recomendado, pero lo dejo admin solo)
-app.get("/api/export/products.xlsx", auth, requireRole("admin"), async (_req, res) => {
-  const rows = await all(`SELECT * FROM products ORDER BY name ASC`);
-
-  const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet("Inventario");
-
-  ws.columns = [
-    { header: "ID", key: "id", width: 8 },
-    { header: "Código", key: "code", width: 16 },
-    { header: "Producto", key: "name", width: 40 },
-    { header: "Laboratorio", key: "lab", width: 22 },
-    { header: "Ubicación", key: "location", width: 18 },
-    { header: "Stock", key: "stock", width: 10 },
-    { header: "Precio Compra", key: "buy_price", width: 14 },
-    { header: "Precio Venta", key: "sell_price", width: 14 },
-    { header: "Vencimiento", key: "expiry_date", width: 14 },
-    { header: "Vencido", key: "expired", width: 10 },
-  ];
-
-  rows.forEach(p => {
-    ws.addRow({
-      ...p,
-      expired: p.expiry_date ? (isExpired(p.expiry_date) ? "SI" : "NO") : ""
-    });
-  });
-
-  ws.getRow(1).font = { bold: true };
-
-  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="inventario.xlsx"`);
-
-  await wb.xlsx.write(res);
-  res.end();
-});
-
-// ✅ Excel Ventas (admin y cajero)
-app.get("/api/export/sales.xlsx", auth, requireRole("admin","cajero"), async (_req, res) => {
-  const sales = await all(
-    `SELECT s.id, s.date, s.total, s.payment_method, u.username as seller
-     FROM sales s
-     LEFT JOIN users u ON u.id = s.seller_user_id
-     ORDER BY s.id DESC`
-  );
-
-  const items = await all(
-    `SELECT si.sale_id, p.code, p.name, si.qty, si.price_unit, si.subtotal
-     FROM sale_items si
-     JOIN products p ON p.id = si.product_id
-     ORDER BY si.sale_id DESC, si.id ASC`
-  );
-
-  const wb = new ExcelJS.Workbook();
-
-  const ws1 = wb.addWorksheet("Ventas");
-  ws1.columns = [
-    { header: "ID Venta", key: "id", width: 10 },
-    { header: "Fecha", key: "date", width: 22 },
-    { header: "Total", key: "total", width: 12 },
-    { header: "Pago", key: "payment_method", width: 14 },
-    { header: "Vendedor", key: "seller", width: 18 },
-  ];
-  sales.forEach(s => ws1.addRow(s));
-  ws1.getRow(1).font = { bold: true };
-
-  const ws2 = wb.addWorksheet("Detalle");
-  ws2.columns = [
-    { header: "ID Venta", key: "sale_id", width: 10 },
-    { header: "Código", key: "code", width: 16 },
-    { header: "Producto", key: "name", width: 40 },
-    { header: "Cantidad", key: "qty", width: 10 },
-    { header: "Precio Unit", key: "price_unit", width: 12 },
-    { header: "Subtotal", key: "subtotal", width: 12 },
-  ];
-  items.forEach(it => ws2.addRow(it));
-  ws2.getRow(1).font = { bold: true };
-
-  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="ventas.xlsx"`);
-
-  await wb.xlsx.write(res);
-  res.end();
-});
-
-const PORT = process.env.PORT || 3000;
-
+const PORT = 3000;
 init().then(() => {
-  // ✅ 0.0.0.0 para que sea accesible desde fuera en EC2
   app.listen(PORT, "0.0.0.0", () => console.log(`✅ Backend corriendo en http://0.0.0.0:${PORT}`));
 });
