@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Historial de ventas | POS Farmacia</title>
   <link rel="stylesheet" href="styles.css"/>
+  <style>
+    .actions-top{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .pill{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;border:1px solid #e5e7eb;background:#fff}
+    .pill b{font-weight:800}
+    .muted{color:#64748b}
+    .kpi{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+    .kpi .pill{background:#f8fafc}
+  </style>
 </head>
 <body>
 <header>
@@ -12,6 +20,7 @@
     Historial de ventas <span class="badge" id="roleTag" style="margin-left:8px;"></span>
   </div>
   <div class="right">
+    <a class="link" href="dashboard.html">Dashboard</a>
     <a class="link" href="pos.html" data-role="admin,cajero">Caja</a>
     <a class="link" href="admin_productos.html" data-role="admin">Productos</a>
     <a class="link" href="usuarios.html" data-role="admin">Usuarios</a>
@@ -21,19 +30,41 @@
 
 <div class="container">
   <section class="card">
-    <h2>Filtro</h2>
-    <div class="row">
+    <div class="row" style="justify-content:space-between;align-items:center;gap:12px;">
+      <div>
+        <h2 style="margin-bottom:6px;">Filtro</h2>
+        <div class="small muted">Filtra por fechas y exporta a Excel.</div>
+      </div>
+
+      <div class="actions-top">
+        <button class="btn" id="btnExcel" data-role="admin,cajero">Excel Ventas</button>
+        <button class="secondary" id="btnLoad">Buscar</button>
+        <button id="btnToday">Hoy</button>
+        <button class="secondary" id="btn7">Últ. 7 días</button>
+        <button class="secondary" id="btnMonth">Este mes</button>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:12px;">
       <input id="from" type="date" />
       <input id="to" type="date" />
-      <button class="secondary" id="btnLoad">Buscar</button>
-      <button id="btnToday">Hoy</button>
     </div>
+
+    <div class="kpi" id="kpi">
+      <span class="pill">📄 Ventas: <b id="kpiCount">0</b></span>
+      <span class="pill">💰 Total vendido: <b>S/ <span id="kpiTotal">0.00</span></b></span>
+    </div>
+
     <p id="msg" class="small" style="color:#ef4444;margin-top:8px;"></p>
   </section>
 
   <section class="card" style="margin-top:14px;">
-    <h2>Ventas</h2>
-    <table class="table">
+    <div class="row" style="justify-content:space-between;align-items:center;">
+      <h2>Ventas</h2>
+      <div class="small muted" id="rangeLabel"></div>
+    </div>
+
+    <table class="table" style="margin-top:10px;">
       <thead>
         <tr>
           <th>#</th>
@@ -45,6 +76,10 @@
       </thead>
       <tbody id="rows"></tbody>
     </table>
+
+    <div class="small muted" style="margin-top:10px;">
+      Tip: haz clic en “Ver” para abrir el detalle y reimprimir.
+    </div>
   </section>
 </div>
 
@@ -81,7 +116,103 @@
 <script>
   requireAuth(["admin","cajero"]);
   applyRoleVisibility();
+
+  // Helpers fecha
+  function ymd(d){
+    const x = new Date(d);
+    const y = x.getFullYear();
+    const m = String(x.getMonth()+1).padStart(2,"0");
+    const dd = String(x.getDate()).padStart(2,"0");
+    return `${y}-${m}-${dd}`;
+  }
+
+  function setRangeLabel(){
+    const f = document.getElementById("from").value;
+    const t = document.getElementById("to").value;
+    const el = document.getElementById("rangeLabel");
+    if (f && t) el.textContent = `Rango: ${f} → ${t}`;
+    else if (f) el.textContent = `Desde: ${f}`;
+    else if (t) el.textContent = `Hasta: ${t}`;
+    else el.textContent = `Últimas ventas`;
+  }
+
+  // KPI desde la tabla renderizada por ventas.js
+  function recomputeKPIs(){
+    const tb = document.getElementById("rows");
+    const trs = tb.querySelectorAll("tr");
+    let count = 0;
+    let sum = 0;
+
+    trs.forEach(tr=>{
+      const tds = tr.querySelectorAll("td");
+      if (tds.length >= 4){
+        const totalTxt = (tds[3].textContent || "").replace("S/","").trim();
+        const n = Number(totalTxt.replace(",",".")) || 0;
+        if (!isNaN(n)){
+          count++;
+          sum += n;
+        }
+      }
+    });
+
+    document.getElementById("kpiCount").textContent = String(count);
+    document.getElementById("kpiTotal").textContent = money(sum);
+  }
+
+  // Export Excel ventas (usa el mismo filtro de fechas)
+  function exportVentas(){
+    const f = document.getElementById("from").value;
+    const t = document.getElementById("to").value;
+
+    const params = new URLSearchParams();
+    if (f) params.set("from", f);
+    if (t) params.set("to", t);
+
+    // ✅ Requiere backend: GET /api/export/sales.xlsx?from=YYYY-MM-DD&to=YYYY-MM-DD
+    downloadExcel("/api/export/sales.xlsx?" + params.toString(), "ventas.xlsx");
+  }
+
+  document.getElementById("btnExcel").onclick = exportVentas;
+
+  // Rápidos
+  document.getElementById("btnToday").onclick = ()=>{
+    const today = ymd(new Date());
+    document.getElementById("from").value = today;
+    document.getElementById("to").value = today;
+    setRangeLabel();
+    document.getElementById("btnLoad").click();
+  };
+
+  document.getElementById("btn7").onclick = ()=>{
+    const now = new Date();
+    const from = new Date(now.getTime() - 6*24*60*60*1000);
+    document.getElementById("from").value = ymd(from);
+    document.getElementById("to").value = ymd(now);
+    setRangeLabel();
+    document.getElementById("btnLoad").click();
+  };
+
+  document.getElementById("btnMonth").onclick = ()=>{
+    const now = new Date();
+    const from = new Date(now.getFullYear(), now.getMonth(), 1);
+    document.getElementById("from").value = ymd(from);
+    document.getElementById("to").value = ymd(now);
+    setRangeLabel();
+    document.getElementById("btnLoad").click();
+  };
+
+  document.getElementById("from").addEventListener("change", setRangeLabel);
+  document.getElementById("to").addEventListener("change", setRangeLabel);
+  setRangeLabel();
+
+  // Este hook permite que ventas.js (después de renderizar) llame KPIs
+  window.__afterVentasRender = () => {
+    setRangeLabel();
+    recomputeKPIs();
+  };
 </script>
+
+<!-- ventas.js sigue siendo el que controla la carga/render + modal -->
 <script src="ventas.js"></script>
 </body>
 </html>
