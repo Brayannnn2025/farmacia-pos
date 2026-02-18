@@ -10,18 +10,16 @@ const app = express();
 // =========================
 // CONFIG
 // =========================
-
-// ⚠️ Si vas a usarlo público, mejor restringir CORS a tu dominio/IP
 app.use(cors());
 app.use(express.json());
 
 const DB_PATH = path.join(__dirname, "db.sqlite");
 const db = new sqlite3.Database(DB_PATH);
 
-// ✅ IMPORTANTE: en producción real esto va en .env
+// ✅ En producción real va en .env
 const JWT_SECRET = "cambia_esto_por_algo_mas_largo_y_secreto";
 
-// ✅ SERVIR FRONTEND (ESTO ES LO QUE TE FALTA)
+// ✅ SERVIR FRONTEND
 const FRONTEND_DIR = path.join(__dirname, "..", "frontend");
 app.use(express.static(FRONTEND_DIR));
 
@@ -90,7 +88,7 @@ function isExpired(expiry_date) {
 
 async function ensureColumn(table, column, typeSql) {
   const cols = await all(`PRAGMA table_info(${table})`);
-  const exists = cols.some(c => c.name === column);
+  const exists = cols.some((c) => c.name === column);
   if (!exists) {
     await run(`ALTER TABLE ${table} ADD COLUMN ${column} ${typeSql}`);
     console.log(`✅ Migración: agregado ${table}.${column}`);
@@ -152,7 +150,9 @@ async function init() {
   if (!admin) {
     const hash = bcrypt.hashSync("admin123", 10);
     await run(`INSERT INTO users(username, password_hash, role) VALUES(?,?,?)`, [
-      "admin", hash, "admin",
+      "admin",
+      hash,
+      "admin",
     ]);
     console.log("✅ Usuario creado: admin / admin123");
   }
@@ -165,16 +165,14 @@ async function init() {
 // =========================
 app.get("/health", (_, res) => res.json({ ok: true }));
 
-// ✅ Root = login
-app.get("/", (_req, res) => {
-  return res.sendFile(path.join(FRONTEND_DIR, "login.html"));
-});
-
-// ✅ Si escribes /login o /dashboard sin .html (opcional)
+// Root = login
+app.get("/", (_req, res) => res.sendFile(path.join(FRONTEND_DIR, "login.html")));
 app.get("/login", (_req, res) => res.sendFile(path.join(FRONTEND_DIR, "login.html")));
 app.get("/dashboard", (_req, res) => res.sendFile(path.join(FRONTEND_DIR, "dashboard.html")));
 
-// -------------------- AUTH --------------------
+// =========================
+// AUTH
+// =========================
 app.post("/api/login", async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: "Faltan datos" });
@@ -194,7 +192,9 @@ app.post("/api/login", async (req, res) => {
   res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
 });
 
-// -------------------- USERS (ADMIN) --------------------
+// =========================
+// USERS (ADMIN)
+// =========================
 app.get("/api/users", auth, requireRole("admin"), async (_req, res) => {
   const rows = await all(`SELECT id, username, role FROM users ORDER BY id ASC`);
   res.json(rows);
@@ -238,7 +238,9 @@ app.delete("/api/users/:id", auth, requireRole("admin"), async (req, res) => {
   res.json({ ok: true });
 });
 
-// -------------------- PRODUCTS --------------------
+// =========================
+// PRODUCTS
+// =========================
 app.get("/api/products", auth, async (req, res) => {
   const q = (req.query.search || "").trim();
   if (!q) {
@@ -319,7 +321,9 @@ app.delete("/api/products/:id", auth, requireRole("admin"), async (req, res) => 
   res.json({ ok: true });
 });
 
-// -------------------- SALES --------------------
+// =========================
+// SALES
+// =========================
 app.post("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) => {
   const { items, payment_method = "efectivo" } = req.body || {};
   if (!Array.isArray(items) || items.length === 0) {
@@ -382,8 +386,8 @@ app.post("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) =>
 
 app.get("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 100), 500);
-  const from = (req.query.from || "").trim(); // YYYY-MM-DD
-  const to = (req.query.to || "").trim();     // YYYY-MM-DD
+  const from = (req.query.from || "").trim();
+  const to = (req.query.to || "").trim();
 
   let sql = `SELECT id, date, total, payment_method FROM sales`;
   const params = [];
@@ -427,9 +431,11 @@ app.get("/api/sales/:id", auth, requireRole("admin", "cajero"), async (req, res)
   res.json({ sale, items });
 });
 
-// -------------------- ALERTAS / DASHBOARD --------------------
+// =========================
+// ALERTAS / DASHBOARD
+// =========================
 
-// Productos que vencen en N días (incluye vencidos si days >= 0)
+// Productos que vencen en N días
 app.get("/api/alerts/expiring", auth, requireRole("admin", "cajero"), async (req, res) => {
   const days = Math.max(0, Number(req.query.days || 30));
   const rows = await all(
@@ -445,11 +451,9 @@ app.get("/api/alerts/expiring", auth, requireRole("admin", "cajero"), async (req
   res.json({ days, count: rows.length, items: rows });
 });
 
-
-
-// ==================== DASHBOARD + ALERTAS EXTRA ====================
+// Stock bajo (compat: min / threshold)
 app.get("/api/alerts/low-stock", auth, requireRole("admin", "cajero"), async (req, res) => {
-  const threshold = Math.max(0, Number(req.query.threshold || 5));
+  const threshold = Math.max(0, Number(req.query.min ?? req.query.threshold ?? 5));
   const rows = await all(
     `SELECT id, code, name, stock, location, expiry_date
      FROM products
@@ -474,10 +478,10 @@ app.get("/api/dashboard/today", auth, requireRole("admin", "cajero"), async (_re
   });
 });
 
-// Resumen general (tarjetas del dashboard)
+// ✅ Resumen general (tarjetas del dashboard) (compat: low / threshold)
 app.get("/api/dashboard/summary", auth, requireRole("admin", "cajero"), async (req, res) => {
-  const threshold = Math.max(0, Number(req.query.threshold || 5));
-  const days = Math.max(0, Number(req.query.days || 30));
+  const low = Math.max(0, Number(req.query.low ?? req.query.threshold ?? 5));
+  const days = Math.max(0, Number(req.query.days ?? 30));
 
   const today = await get(
     `SELECT COUNT(*) AS count, COALESCE(SUM(total),0) AS total
@@ -485,12 +489,9 @@ app.get("/api/dashboard/summary", auth, requireRole("admin", "cajero"), async (r
      WHERE substr(date,1,10) = date('now')`
   );
 
-  const low = await get(
-    `SELECT COUNT(*) AS c FROM products WHERE stock <= ?`,
-    [threshold]
-  );
+  const lowRow = await get(`SELECT COUNT(*) AS c FROM products WHERE stock <= ?`, [low]);
 
-  const exp = await get(
+  const expRow = await get(
     `SELECT COUNT(*) AS c
      FROM products
      WHERE expiry_date IS NOT NULL AND expiry_date != ''
@@ -500,15 +501,17 @@ app.get("/api/dashboard/summary", auth, requireRole("admin", "cajero"), async (r
 
   res.json({
     today: { count: Number(today?.count || 0), total: Number(today?.total || 0) },
-    low_stock: { threshold, count: Number(low?.c || 0) },
-    expiring: { days, count: Number(exp?.c || 0) },
+    low_stock: { low, count: Number(lowRow?.c || 0) },
+    expiring: { days, count: Number(expRow?.c || 0) },
   });
 });
 
-
+// =========================
+// START
+// =========================
 const PORT = 3000;
 init().then(() => {
-  app.listen(PORT, "0.0.0.0", () =>
-    console.log(`✅ Backend corriendo en http://0.0.0.0:${PORT}`)
-  );
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`✅ Backend corriendo en http://0.0.0.0:${PORT}`);
+  });
 });
