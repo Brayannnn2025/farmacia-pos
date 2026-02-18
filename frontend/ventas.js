@@ -1,13 +1,25 @@
-// ventas.js (ACTUALIZADO)
+// ventas.js (ACTUALIZADO FINAL)
 // Requiere app.js cargado (api(), token(), money(), logout()).
 
 const qs = (id) => document.getElementById(id);
 
-function setMsg(text = "", isError = false) {
-  const m = qs("msg");
-  if (!m) return;
-  m.textContent = text;
-  m.style.color = isError ? "#ef4444" : "#16a34a";
+function showErr(text = "") {
+  const e = qs("msgErr");
+  const o = qs("msgOk");
+  if (o) o.style.display = "none";
+  if (!e) return;
+  e.textContent = text;
+  e.style.display = text ? "block" : "none";
+}
+
+function showOk(text = "") {
+  const e = qs("msgErr");
+  const o = qs("msgOk");
+  if (e) e.style.display = "none";
+  if (!o) return;
+  o.textContent = text;
+  o.style.display = text ? "block" : "none";
+  if (text) setTimeout(() => { o.style.display = "none"; }, 2200);
 }
 
 function todayISO() {
@@ -34,7 +46,6 @@ function renderList(rows) {
 
   if (!rows || rows.length === 0) {
     tb.innerHTML = `<tr><td colspan="5" class="small">No hay ventas en el rango.</td></tr>`;
-    // ✅ KPI hook
     if (window.__afterVentasRender) window.__afterVentasRender();
     return;
   }
@@ -51,25 +62,26 @@ function renderList(rows) {
     tb.appendChild(tr);
   }
 
-  // Delegación de eventos para botones "Ver"
   tb.querySelectorAll("button[data-id]").forEach((btn) => {
     btn.onclick = () => openSale(Number(btn.dataset.id));
   });
 
-  // ✅ KPI hook (para que ventas.html actualice Ventas/Total)
+  // ✅ KPI hook
   if (window.__afterVentasRender) window.__afterVentasRender();
 }
 
 async function loadSales(from, to) {
   try {
-    setMsg("Cargando...", false);
+    showErr("");
+    showOk("Cargando ventas...");
     const url = `/api/sales?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=200`;
     const rows = await api(url);
     renderList(rows);
-    setMsg("", false);
+    showOk("");
   } catch (e) {
     console.error(e);
-    setMsg("❌ Error cargando ventas. Revisa consola / token / backend.", true);
+    showOk("");
+    showErr("❌ Error cargando ventas: " + (e.message || "revisa backend/token"));
   }
 }
 
@@ -91,55 +103,65 @@ function closeModal() {
 function renderDetail(data) {
   const { sale, items } = data;
 
-  qs("meta").textContent = `Venta #${sale.id} · ${fmtDate(sale.date)} · Pago: ${sale.payment_method}`;
-  qs("total").textContent = money(Number(sale.total || 0));
+  const meta = qs("meta");
+  const total = qs("total");
+  const itemsDiv = qs("items");
+  const ticketMeta = qs("ticketMeta");
+  const ticketTotal = qs("ticketTotal");
+  const ticketItems = qs("ticketItems");
 
-  // Tabla items en modal
-  qs("items").innerHTML = `
-    <table class="table">
-      <thead>
-        <tr>
-          <th>Código</th><th>Producto</th><th>Cant</th><th>P.Unit</th><th>Sub</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${items.map(it => `
+  if (meta) meta.textContent = `Venta #${sale.id} · ${fmtDate(sale.date)} · Pago: ${sale.payment_method}`;
+  if (total) total.textContent = money(Number(sale.total || 0));
+
+  if (itemsDiv) {
+    itemsDiv.innerHTML = `
+      <table class="table">
+        <thead>
           <tr>
-            <td>${it.code}</td>
-            <td>${it.name}</td>
-            <td>${it.qty}</td>
-            <td>S/ ${money(Number(it.price_unit))}</td>
-            <td>S/ ${money(Number(it.subtotal))}</td>
+            <th>Código</th><th>Producto</th><th>Cant</th><th>P.Unit</th><th>Sub</th>
           </tr>
-        `).join("")}
-      </tbody>
-    </table>
-  `;
+        </thead>
+        <tbody>
+          ${items.map(it => `
+            <tr>
+              <td>${it.code}</td>
+              <td>${it.name}</td>
+              <td>${it.qty}</td>
+              <td>S/ ${money(Number(it.price_unit))}</td>
+              <td>S/ ${money(Number(it.subtotal))}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  }
 
-  // Ticket oculto para imprimir
-  qs("ticketMeta").textContent = `Venta #${sale.id} · ${fmtDate(sale.date)} · Pago: ${sale.payment_method}`;
-  qs("ticketTotal").textContent = money(Number(sale.total || 0));
-  qs("ticketItems").innerHTML = items
-    .map(it => `
+  if (ticketMeta) ticketMeta.textContent = `Venta #${sale.id} · ${fmtDate(sale.date)} · Pago: ${sale.payment_method}`;
+  if (ticketTotal) ticketTotal.textContent = money(Number(sale.total || 0));
+
+  if (ticketItems) {
+    ticketItems.innerHTML = items.map(it => `
       <div style="display:flex;justify-content:space-between;gap:12px;">
         <div>${it.name} <span style="color:#555;">x${it.qty}</span></div>
         <div>S/ ${money(Number(it.subtotal))}</div>
       </div>
-    `)
-    .join("");
+    `).join("");
+  }
 }
 
 async function openSale(id) {
   try {
-    setMsg("Cargando detalle...", false);
+    showErr("");
+    showOk("Cargando detalle...");
     const data = await api(`/api/sales/${id}`);
     currentSale = data;
     renderDetail(data);
     openModal();
-    setMsg("", false);
+    showOk("");
   } catch (e) {
     console.error(e);
-    setMsg("❌ No se pudo cargar el detalle de la venta.", true);
+    showOk("");
+    showErr("❌ No se pudo cargar el detalle: " + (e.message || ""));
   }
 }
 
@@ -147,14 +169,16 @@ function printTicketFromModal() {
   if (!currentSale) return;
 
   const ticket = qs("ticket");
-  if (!ticket) return setMsg("No se encontró el ticket para imprimir.", true);
+  if (!ticket) {
+    showErr("No se encontró el ticket para imprimir.");
+    return;
+  }
 
   const html = ticket.innerHTML;
 
-  // Popup
   const w = window.open("", "_blank", "width=420,height=700");
   if (!w) {
-    setMsg("⚠️ El navegador bloqueó la ventana de impresión. Permite popups y reintenta.", true);
+    showErr("⚠️ El navegador bloqueó la impresión. Permite popups y reintenta.");
     return;
   }
 
@@ -176,10 +200,8 @@ function printTicketFromModal() {
   w.document.close();
   w.focus();
 
-  // Espera un pelín para asegurar render antes de imprimir
   setTimeout(() => {
     w.print();
-    // w.close(); // si quieres que se cierre solo, descomenta
   }, 250);
 }
 
@@ -187,30 +209,30 @@ function printTicketFromModal() {
 // INIT
 // =======================
 function initVentas() {
-  if (!token()) location.href = "login.html";
+  if (!token()) {
+    location.href = "login.html";
+    return;
+  }
 
   const btnLoad = qs("btnLoad");
   const btnToday = qs("btnToday");
   const inpFrom = qs("from");
   const inpTo = qs("to");
 
-  // Si por alguna razón no existen inputs, salimos
   if (!inpFrom || !inpTo || !btnLoad) return;
 
-  // Defaults (si están vacíos)
+  // Defaults
   const t = todayISO();
   if (!inpFrom.value) inpFrom.value = t;
   if (!inpTo.value) inpTo.value = t;
 
-  // Buscar
   btnLoad.onclick = () => {
     const from = inpFrom.value;
     const to = inpTo.value;
-    if (!from || !to) return setMsg("Selecciona fechas válidas.", true);
+    if (!from || !to) return showErr("Selecciona fechas válidas.");
     loadSales(from, to);
   };
 
-  // Hoy (solo si existe el botón)
   if (btnToday) {
     btnToday.onclick = () => {
       const t = todayISO();
@@ -220,13 +242,12 @@ function initVentas() {
     };
   }
 
-  // Modal buttons
   const btnClose = qs("btnClose");
   const btnPrint = qs("btnPrint");
   if (btnClose) btnClose.onclick = closeModal;
   if (btnPrint) btnPrint.onclick = printTicketFromModal;
 
-  // Cargar al abrir con el rango actual del HTML
+  // Cargar al abrir
   loadSales(inpFrom.value, inpTo.value);
 }
 
