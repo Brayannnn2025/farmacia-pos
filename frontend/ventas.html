@@ -12,6 +12,8 @@
     .muted{color:#64748b}
     .kpi{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
     .kpi .pill{background:#f8fafc}
+    .okmsg{color:#16a34a;margin-top:8px}
+    .errmsg{color:#ef4444;margin-top:8px}
   </style>
 </head>
 <body>
@@ -55,7 +57,8 @@
       <span class="pill">💰 Total vendido: <b>S/ <span id="kpiTotal">0.00</span></b></span>
     </div>
 
-    <p id="msg" class="small" style="color:#ef4444;margin-top:8px;"></p>
+    <p id="msgErr" class="small errmsg" style="display:none;"></p>
+    <p id="msgOk" class="small okmsg" style="display:none;"></p>
   </section>
 
   <section class="card" style="margin-top:14px;">
@@ -117,6 +120,23 @@
   requireAuth(["admin","cajero"]);
   applyRoleVisibility();
 
+  const $from = document.getElementById("from");
+  const $to   = document.getElementById("to");
+  const $msgErr = document.getElementById("msgErr");
+  const $msgOk  = document.getElementById("msgOk");
+
+  function showErr(t){
+    $msgOk.style.display="none";
+    $msgErr.textContent = t;
+    $msgErr.style.display = "block";
+  }
+  function showOk(t){
+    $msgErr.style.display="none";
+    $msgOk.textContent = t;
+    $msgOk.style.display = "block";
+    setTimeout(()=>{ $msgOk.style.display="none"; }, 2500);
+  }
+
   // Helpers fecha
   function ymd(d){
     const x = new Date(d);
@@ -127,8 +147,8 @@
   }
 
   function setRangeLabel(){
-    const f = document.getElementById("from").value;
-    const t = document.getElementById("to").value;
+    const f = $from.value;
+    const t = $to.value;
     const el = document.getElementById("rangeLabel");
     if (f && t) el.textContent = `Rango: ${f} → ${t}`;
     else if (f) el.textContent = `Desde: ${f}`;
@@ -159,17 +179,34 @@
     document.getElementById("kpiTotal").textContent = money(sum);
   }
 
-  // Export Excel ventas (usa el mismo filtro de fechas)
-  function exportVentas(){
-    const f = document.getElementById("from").value;
-    const t = document.getElementById("to").value;
+  // ✅ Export Excel ventas (1 clic)
+  async function exportVentas(){
+    try{
+      // Si no hay fechas, exporta HOY por defecto (mejor UX)
+      if (!$from.value || !$to.value){
+        const today = ymd(new Date());
+        $from.value = today;
+        $to.value = today;
+        setRangeLabel();
+      }
 
-    const params = new URLSearchParams();
-    if (f) params.set("from", f);
-    if (t) params.set("to", t);
+      const f = $from.value;
+      const t = $to.value;
+      if (!f || !t) return showErr("Selecciona fechas válidas.");
 
-    // ✅ Requiere backend: GET /api/export/sales.xlsx?from=YYYY-MM-DD&to=YYYY-MM-DD
-    downloadExcel("/api/export/sales.xlsx?" + params.toString(), "ventas.xlsx");
+      const params = new URLSearchParams();
+      params.set("from", f);
+      params.set("to", t);
+
+      // ✅ Requiere backend:
+      // GET /api/export/sales.xlsx?from=YYYY-MM-DD&to=YYYY-MM-DD
+      showOk("Generando Excel...");
+      await downloadExcel(`/api/export/sales.xlsx?${params.toString()}`, `ventas_${f}_a_${t}.xlsx`);
+      showOk("✅ Excel descargado.");
+    }catch(e){
+      console.error(e);
+      showErr("No se pudo exportar Excel: " + e.message);
+    }
   }
 
   document.getElementById("btnExcel").onclick = exportVentas;
@@ -177,8 +214,8 @@
   // Rápidos
   document.getElementById("btnToday").onclick = ()=>{
     const today = ymd(new Date());
-    document.getElementById("from").value = today;
-    document.getElementById("to").value = today;
+    $from.value = today;
+    $to.value = today;
     setRangeLabel();
     document.getElementById("btnLoad").click();
   };
@@ -186,8 +223,8 @@
   document.getElementById("btn7").onclick = ()=>{
     const now = new Date();
     const from = new Date(now.getTime() - 6*24*60*60*1000);
-    document.getElementById("from").value = ymd(from);
-    document.getElementById("to").value = ymd(now);
+    $from.value = ymd(from);
+    $to.value = ymd(now);
     setRangeLabel();
     document.getElementById("btnLoad").click();
   };
@@ -195,17 +232,22 @@
   document.getElementById("btnMonth").onclick = ()=>{
     const now = new Date();
     const from = new Date(now.getFullYear(), now.getMonth(), 1);
-    document.getElementById("from").value = ymd(from);
-    document.getElementById("to").value = ymd(now);
+    $from.value = ymd(from);
+    $to.value = ymd(now);
     setRangeLabel();
     document.getElementById("btnLoad").click();
   };
 
-  document.getElementById("from").addEventListener("change", setRangeLabel);
-  document.getElementById("to").addEventListener("change", setRangeLabel);
+  $from.addEventListener("change", setRangeLabel);
+  $to.addEventListener("change", setRangeLabel);
+
+  // Default: HOY
+  const today = ymd(new Date());
+  if (!$from.value) $from.value = today;
+  if (!$to.value) $to.value = today;
   setRangeLabel();
 
-  // Este hook permite que ventas.js (después de renderizar) llame KPIs
+  // Hook: cuando ventas.js termine de renderizar
   window.__afterVentasRender = () => {
     setRangeLabel();
     recomputeKPIs();
