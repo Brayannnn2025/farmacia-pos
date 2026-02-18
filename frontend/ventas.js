@@ -1,4 +1,4 @@
-// ventas.js
+// ventas.js (ACTUALIZADO)
 // Requiere app.js cargado (api(), token(), money(), logout()).
 
 const qs = (id) => document.getElementById(id);
@@ -28,10 +28,14 @@ function fmtDate(iso) {
 // =======================
 function renderList(rows) {
   const tb = qs("rows");
+  if (!tb) return;
+
   tb.innerHTML = "";
 
   if (!rows || rows.length === 0) {
     tb.innerHTML = `<tr><td colspan="5" class="small">No hay ventas en el rango.</td></tr>`;
+    // ✅ KPI hook
+    if (window.__afterVentasRender) window.__afterVentasRender();
     return;
   }
 
@@ -51,6 +55,9 @@ function renderList(rows) {
   tb.querySelectorAll("button[data-id]").forEach((btn) => {
     btn.onclick = () => openSale(Number(btn.dataset.id));
   });
+
+  // ✅ KPI hook (para que ventas.html actualice Ventas/Total)
+  if (window.__afterVentasRender) window.__afterVentasRender();
 }
 
 async function loadSales(from, to) {
@@ -72,10 +79,12 @@ async function loadSales(from, to) {
 let currentSale = null;
 
 function openModal() {
-  qs("modal").style.display = "block";
+  const m = qs("modal");
+  if (m) m.style.display = "block";
 }
 function closeModal() {
-  qs("modal").style.display = "none";
+  const m = qs("modal");
+  if (m) m.style.display = "none";
   currentSale = null;
 }
 
@@ -111,10 +120,12 @@ function renderDetail(data) {
   qs("ticketMeta").textContent = `Venta #${sale.id} · ${fmtDate(sale.date)} · Pago: ${sale.payment_method}`;
   qs("ticketTotal").textContent = money(Number(sale.total || 0));
   qs("ticketItems").innerHTML = items
-    .map(it => `<div style="display:flex;justify-content:space-between;gap:12px;">
-      <div>${it.name} <span style="color:#555;">x${it.qty}</span></div>
-      <div>S/ ${money(Number(it.subtotal))}</div>
-    </div>`)
+    .map(it => `
+      <div style="display:flex;justify-content:space-between;gap:12px;">
+        <div>${it.name} <span style="color:#555;">x${it.qty}</span></div>
+        <div>S/ ${money(Number(it.subtotal))}</div>
+      </div>
+    `)
     .join("");
 }
 
@@ -135,8 +146,18 @@ async function openSale(id) {
 function printTicketFromModal() {
   if (!currentSale) return;
 
-  const html = qs("ticket").innerHTML;
+  const ticket = qs("ticket");
+  if (!ticket) return setMsg("No se encontró el ticket para imprimir.", true);
+
+  const html = ticket.innerHTML;
+
+  // Popup
   const w = window.open("", "_blank", "width=420,height=700");
+  if (!w) {
+    setMsg("⚠️ El navegador bloqueó la ventana de impresión. Permite popups y reintenta.", true);
+    return;
+  }
+
   w.document.write(`
     <html>
       <head>
@@ -146,6 +167,7 @@ function printTicketFromModal() {
           body{font-family:Arial;margin:0;padding:0;}
           .small{font-size:12px;color:#555;}
           hr{border:none;border-top:1px solid #ddd;margin:10px 0;}
+          h2,h3{margin:0;}
         </style>
       </head>
       <body>${html}</body>
@@ -153,7 +175,12 @@ function printTicketFromModal() {
   `);
   w.document.close();
   w.focus();
-  w.print();
+
+  // Espera un pelín para asegurar render antes de imprimir
+  setTimeout(() => {
+    w.print();
+    // w.close(); // si quieres que se cierre solo, descomenta
+  }, 250);
 }
 
 // =======================
@@ -167,18 +194,15 @@ function initVentas() {
   const inpFrom = qs("from");
   const inpTo = qs("to");
 
-  // defaults
+  // Si por alguna razón no existen inputs, salimos
+  if (!inpFrom || !inpTo || !btnLoad) return;
+
+  // Defaults (si están vacíos)
   const t = todayISO();
-  inpFrom.value = t;
-  inpTo.value = t;
+  if (!inpFrom.value) inpFrom.value = t;
+  if (!inpTo.value) inpTo.value = t;
 
-  btnToday.onclick = () => {
-    const t = todayISO();
-    inpFrom.value = t;
-    inpTo.value = t;
-    loadSales(t, t);
-  };
-
+  // Buscar
   btnLoad.onclick = () => {
     const from = inpFrom.value;
     const to = inpTo.value;
@@ -186,12 +210,24 @@ function initVentas() {
     loadSales(from, to);
   };
 
-  // modal buttons
-  qs("btnClose").onclick = closeModal;
-  qs("btnPrint").onclick = printTicketFromModal;
+  // Hoy (solo si existe el botón)
+  if (btnToday) {
+    btnToday.onclick = () => {
+      const t = todayISO();
+      inpFrom.value = t;
+      inpTo.value = t;
+      loadSales(t, t);
+    };
+  }
 
-  // cargar hoy al abrir
-  loadSales(t, t);
+  // Modal buttons
+  const btnClose = qs("btnClose");
+  const btnPrint = qs("btnPrint");
+  if (btnClose) btnClose.onclick = closeModal;
+  if (btnPrint) btnPrint.onclick = printTicketFromModal;
+
+  // Cargar al abrir con el rango actual del HTML
+  loadSales(inpFrom.value, inpTo.value);
 }
 
 document.addEventListener("DOMContentLoaded", initVentas);
