@@ -445,39 +445,66 @@ app.get("/api/alerts/expiring", auth, requireRole("admin", "cajero"), async (req
   res.json({ days, count: rows.length, items: rows });
 });
 
-// ✅ Stock bajo (por defecto < 5)
+
+
+// ==================== DASHBOARD + ALERTAS EXTRA ====================
 app.get("/api/alerts/low-stock", auth, requireRole("admin", "cajero"), async (req, res) => {
-  const min = Math.max(0, Number(req.query.min || 5));
+  const threshold = Math.max(0, Number(req.query.threshold || 5));
   const rows = await all(
-    `
-    SELECT id, code, name, stock, location, expiry_date
-    FROM products
-    WHERE stock < ?
-    ORDER BY stock ASC, name ASC
-    `,
-    [min]
+    `SELECT id, code, name, stock, location, expiry_date
+     FROM products
+     WHERE stock <= ?
+     ORDER BY stock ASC, name ASC`,
+    [threshold]
   );
-  res.json({ min, count: rows.length, items: rows });
+  res.json({ threshold, count: rows.length, items: rows });
 });
 
-// ✅ Resumen de ventas de HOY
+// Resumen del día (ventas hoy)
 app.get("/api/dashboard/today", auth, requireRole("admin", "cajero"), async (_req, res) => {
   const row = await get(
-    `
-    SELECT
-      COUNT(*) AS count,
-      COALESCE(SUM(total), 0) AS total
-    FROM sales
-    WHERE substr(date,1,10) = date('now')
-    `
+    `SELECT COUNT(*) AS count, COALESCE(SUM(total),0) AS total
+     FROM sales
+     WHERE substr(date,1,10) = date('now')`
   );
-
   res.json({
     date: new Date().toISOString().slice(0, 10),
     count: Number(row?.count || 0),
     total: Number(row?.total || 0),
   });
 });
+
+// Resumen general (tarjetas del dashboard)
+app.get("/api/dashboard/summary", auth, requireRole("admin", "cajero"), async (req, res) => {
+  const threshold = Math.max(0, Number(req.query.threshold || 5));
+  const days = Math.max(0, Number(req.query.days || 30));
+
+  const today = await get(
+    `SELECT COUNT(*) AS count, COALESCE(SUM(total),0) AS total
+     FROM sales
+     WHERE substr(date,1,10) = date('now')`
+  );
+
+  const low = await get(
+    `SELECT COUNT(*) AS c FROM products WHERE stock <= ?`,
+    [threshold]
+  );
+
+  const exp = await get(
+    `SELECT COUNT(*) AS c
+     FROM products
+     WHERE expiry_date IS NOT NULL AND expiry_date != ''
+       AND julianday(expiry_date) - julianday(date('now')) <= ?`,
+    [String(days)]
+  );
+
+  res.json({
+    today: { count: Number(today?.count || 0), total: Number(today?.total || 0) },
+    low_stock: { threshold, count: Number(low?.c || 0) },
+    expiring: { days, count: Number(exp?.c || 0) },
+  });
+});
+
 
 const PORT = 3000;
 init().then(() => {
