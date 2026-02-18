@@ -427,7 +427,9 @@ app.get("/api/sales/:id", auth, requireRole("admin", "cajero"), async (req, res)
   res.json({ sale, items });
 });
 
-// -------------------- ALERTAS --------------------
+// -------------------- ALERTAS / DASHBOARD --------------------
+
+// Productos que vencen en N días (incluye vencidos si days >= 0)
 app.get("/api/alerts/expiring", auth, requireRole("admin", "cajero"), async (req, res) => {
   const days = Math.max(0, Number(req.query.days || 30));
   const rows = await all(
@@ -443,7 +445,43 @@ app.get("/api/alerts/expiring", auth, requireRole("admin", "cajero"), async (req
   res.json({ days, count: rows.length, items: rows });
 });
 
+// ✅ Stock bajo (por defecto < 5)
+app.get("/api/alerts/low-stock", auth, requireRole("admin", "cajero"), async (req, res) => {
+  const min = Math.max(0, Number(req.query.min || 5));
+  const rows = await all(
+    `
+    SELECT id, code, name, stock, location, expiry_date
+    FROM products
+    WHERE stock < ?
+    ORDER BY stock ASC, name ASC
+    `,
+    [min]
+  );
+  res.json({ min, count: rows.length, items: rows });
+});
+
+// ✅ Resumen de ventas de HOY
+app.get("/api/dashboard/today", auth, requireRole("admin", "cajero"), async (_req, res) => {
+  const row = await get(
+    `
+    SELECT
+      COUNT(*) AS count,
+      COALESCE(SUM(total), 0) AS total
+    FROM sales
+    WHERE substr(date,1,10) = date('now')
+    `
+  );
+
+  res.json({
+    date: new Date().toISOString().slice(0, 10),
+    count: Number(row?.count || 0),
+    total: Number(row?.total || 0),
+  });
+});
+
 const PORT = 3000;
 init().then(() => {
-  app.listen(PORT, "0.0.0.0", () => console.log(`✅ Backend corriendo en http://0.0.0.0:${PORT}`));
+  app.listen(PORT, "0.0.0.0", () =>
+    console.log(`✅ Backend corriendo en http://0.0.0.0:${PORT}`)
+  );
 });
