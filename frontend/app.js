@@ -1,9 +1,9 @@
 // app.js
 
-// ✅ API automática:
-// - Si abres desde EC2:  http://35.x.x.x:3000  -> usa esa misma
-// - Si abres en tu PC local: http://localhost:3000 -> usa localhost
-const API = window.location.origin;
+// ✅ API dinámico: usa el mismo host/puerto donde abriste la web
+// Ej: si abres http://35.171.xxx.xxx:3000/login.html
+// entonces API = http://35.171.xxx.xxx:3000
+const API = `${location.protocol}//${location.host}`;
 
 // Helper DOM (NO redeclarar $ en otros .js)
 function $(id) { return document.getElementById(id); }
@@ -30,7 +30,7 @@ function isCashier() { return role() === "cajero"; }
 
 // A qué página mandarlo según rol
 function homeForRole() {
-  return isAdmin() ? "admin_productos.html" : "pos.html";
+  return isAdmin() ? "dashboard.html" : "pos.html";
 }
 
 // Requiere login (y opcionalmente roles permitidos)
@@ -64,6 +64,7 @@ function applyRoleVisibility() {
 async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
 
+  // Si mandas body JSON, metemos Content-Type
   if (opts.body && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
@@ -71,10 +72,14 @@ async function api(path, opts = {}) {
   const t = token();
   if (t) headers["Authorization"] = "Bearer " + t;
 
-  // ✅ importante: path debe empezar con "/"
-  const url = API + path;
+  const res = await fetch(API + path, { ...opts, headers });
 
-  const res = await fetch(url, { ...opts, headers });
+  // si el endpoint devuelve archivo (Excel), no intentes JSON
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) {
+    if (!res.ok) throw new Error("No se pudo descargar el Excel");
+    return res; // devolvemos Response para manejar blob
+  }
 
   const text = await res.text();
   let data = {};
@@ -92,4 +97,20 @@ function logout() {
 
 function money(n) {
   return (Number(n) || 0).toFixed(2);
+}
+
+// ✅ Utilidad: descargar Excel desde un endpoint
+async function downloadExcel(endpoint, filename) {
+  const res = await api(endpoint, { method: "GET" });
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  URL.revokeObjectURL(url);
 }
