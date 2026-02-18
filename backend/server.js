@@ -506,6 +506,198 @@ app.get("/api/dashboard/summary", auth, requireRole("admin", "cajero"), async (r
   });
 });
 
+// ==================== EXPORT EXCEL ====================
+const ExcelJS = require("exceljs");
+
+// Helper: set headers para descarga excel
+function setXlsxDownload(res, filename) {
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+}
+
+// ✅ A) Exportar Inventario
+// GET /api/export/inventory.xlsx
+app.get("/api/export/inventory.xlsx", auth, requireRole("admin", "cajero"), async (_req, res) => {
+  try {
+    const rows = await all(`
+      SELECT code, name, lab, location, stock, buy_price, sell_price, expiry_date
+      FROM products
+      ORDER BY name ASC
+    `);
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "POS Farmacia";
+    wb.created = new Date();
+
+    const ws = wb.addWorksheet("Inventario");
+
+    ws.columns = [
+      { header: "Código", key: "code", width: 14 },
+      { header: "Producto", key: "name", width: 32 },
+      { header: "Laboratorio", key: "lab", width: 18 },
+      { header: "Ubicación", key: "location", width: 14 },
+      { header: "Stock", key: "stock", width: 10 },
+      { header: "P. Compra", key: "buy_price", width: 12 },
+      { header: "P. Venta", key: "sell_price", width: 12 },
+      { header: "Vence", key: "expiry_date", width: 14 },
+      { header: "Estado", key: "estado", width: 14 },
+    ];
+
+    // Header style
+    ws.getRow(1).font = { bold: true };
+    ws.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
+
+    const today = new Date();
+    const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+
+    for (const r of rows) {
+      let estado = "OK";
+      if (r.expiry_date) {
+        const d = new Date(r.expiry_date + "T00:00:00");
+        if (!isNaN(d.getTime())) {
+          const e0 = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+          const diffDays = Math.ceil((e0 - t0) / (1000 * 60 * 60 * 24));
+          if (diffDays < 0) estado = "VENCIDO";
+          else if (diffDays <= 30) estado = "POR VENCER";
+        }
+      }
+
+      ws.addRow({
+        code: r.code,
+        name: r.name,
+        lab: r.lab || "",
+        location: r.location || "",
+        stock: Number(r.stock || 0),
+        buy_price: Number(r.buy_price || 0),
+        sell_price: Number(r.sell_price || 0),
+        expiry_date: r.expiry_date || "",
+        estado,
+      });
+    }
+
+    // Formatos numéricos
+    ws.getColumn("buy_price").numFmt = '"S/ "0.00';
+    ws.getColumn("sell_price").numFmt = '"S/ "0.00';
+
+    // Filtro + freeze
+    ws.autoFilter = {
+      from: "A1",
+      to: "I1",
+    };
+    ws.views = [{ state: "frozen", ySplit: 1 }];
+
+    const filename = `inventario_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    setXlsxDownload(res, filename);
+
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "No se pudo exportar inventario" });
+  }
+});
+
+// ✅ B) Exportar Ventas por rango
+// GET /api/export/sales.xlsx?from=YYYY-MM-DD&to=YYYY-MM-DD
+app.get("/api/export/sales.xlsx", auth, requireRole("admin", "cajero"), async (req, res) => {
+  try {
+    const from = String(req.query.from || "").trim();
+    const to = String(req.query.to || "").trim();
+    if (!from || !to) return res.status(400).json({ error: "Faltan from/to" });
+
+    const sales = await all(
+      `
+      SELECT id, date, total, payment_method
+      FROM sales
+      WHERE substr(date,1,10) BETWEEN ? AND ?
+      ORDER BY id DESC
+      `,
+      [from, to]
+    );
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "POS Farmacia";
+    wb.created = new Date();
+
+    const ws = wb.addWorksheet("Ventas");
+
+    ws.columns = [
+      { header: "ID Venta", key: "id", width: 10 },
+      { header: "Fecha", key: "date", width: 20 },
+      { header: "Pago", key: "payment_method", width: 14 },
+      { header: "Total", key: "total", width: 12 },
+    ];
+
+    ws.getRow(1).font = { bold: true };
+    ws.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
+
+    for (const s of sales) {
+      ws.addRow({
+        id: s.id,
+        date: String(s.date || "").replace("T", " ").slice(0, 16),
+        payment_method: s.payment_method,
+        total: Number(s.total || 0),
+      });
+    }
+    ws.getColumn("total").numFmt = '"S/ "0.00';
+    ws.autoFilter = { from: "A1", to: "D1" };
+    ws.views = [{ state: "frozen", ySplit: 1 }];
+
+    // (Opcional PRO) Hoja 2: Detalle de items vendidos en rango
+    const ws2 = wb.addWorksheet("Detalle");
+    ws2.columns = [
+      { header: "ID Venta", key: "sale_id", width: 10 },
+      { header: "Fecha", key: "sale_date", width: 20 },
+      { header: "Código", key: "code", width: 14 },
+      { header: "Producto", key: "name", width: 30 },
+      { header: "Cant", key: "qty", width: 8 },
+      { header: "P.Unit", key: "price_unit", width: 12 },
+      { header: "Sub", key: "subtotal", width: 12 },
+    ];
+    ws2.getRow(1).font = { bold: true };
+    ws2.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
+
+    const items = await all(
+      `
+      SELECT s.id as sale_id, s.date as sale_date, p.code, p.name,
+             si.qty, si.price_unit, si.subtotal
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id
+      JOIN products p ON p.id = si.product_id
+      WHERE substr(s.date,1,10) BETWEEN ? AND ?
+      ORDER BY s.id DESC
+      `,
+      [from, to]
+    );
+
+    for (const it of items) {
+      ws2.addRow({
+        sale_id: it.sale_id,
+        sale_date: String(it.sale_date || "").replace("T", " ").slice(0, 16),
+        code: it.code,
+        name: it.name,
+        qty: Number(it.qty || 0),
+        price_unit: Number(it.price_unit || 0),
+        subtotal: Number(it.subtotal || 0),
+      });
+    }
+    ws2.getColumn("price_unit").numFmt = '"S/ "0.00';
+    ws2.getColumn("subtotal").numFmt = '"S/ "0.00';
+    ws2.autoFilter = { from: "A1", to: "G1" };
+    ws2.views = [{ state: "frozen", ySplit: 1 }];
+
+    const filename = `ventas_${from}_a_${to}.xlsx`;
+    setXlsxDownload(res, filename);
+
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "No se pudo exportar ventas" });
+  }
+});
+
+
 // =========================
 // START
 // =========================
