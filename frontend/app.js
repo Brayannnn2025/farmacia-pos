@@ -61,6 +61,9 @@ function applyRoleVisibility() {
   if (tag) tag.textContent = r ? r.toUpperCase() : "";
 }
 
+// =======================
+// API JSON (NORMAL)
+// =======================
 async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
 
@@ -74,34 +77,53 @@ async function api(path, opts = {}) {
 
   const res = await fetch(API + path, { ...opts, headers });
 
-  // si el endpoint devuelve archivo (Excel), no intentes JSON
-  const contentType = res.headers.get("content-type") || "";
-  if (contentType.includes("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) {
-    if (!res.ok) throw new Error("No se pudo descargar el Excel");
-    return res; // devolvemos Response para manejar blob
+  // Si expiró el token -> forzamos logout suave
+  if (res.status === 401) {
+    // no redirigimos si estás en login
+    if (!location.pathname.endsWith("login.html")) logout();
+    throw new Error("No autorizado. Vuelve a iniciar sesión.");
   }
 
   const text = await res.text();
   let data = {};
-  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  try { data = text ? JSON.parse(text) : {}; }
+  catch { data = { raw: text }; }
 
   if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
   return data;
 }
 
-function logout() {
-  localStorage.removeItem("token");
-  localStorage.removeItem("user");
-  location.href = "login.html";
-}
+// =======================
+// DESCARGA EXCEL (XLSX) ✅
+// =======================
+// Úsalo así:
+// await downloadXlsx("/api/export/inventory.xlsx", "inventario.xlsx");
+// await downloadXlsx(`/api/export/sales.xlsx?from=2026-02-01&to=2026-02-18`, "ventas.xlsx");
+async function downloadXlsx(endpoint, filename = "reporte.xlsx") {
+  const t = token();
+  if (!t) {
+    location.href = "login.html";
+    return;
+  }
 
-function money(n) {
-  return (Number(n) || 0).toFixed(2);
-}
+  const res = await fetch(API + endpoint, {
+    method: "GET",
+    headers: {
+      Authorization: "Bearer " + t
+    }
+  });
 
-// ✅ Utilidad: descargar Excel desde un endpoint
-async function downloadExcel(endpoint, filename) {
-  const res = await api(endpoint, { method: "GET" });
+  if (res.status === 401) {
+    logout();
+    throw new Error("No autorizado. Vuelve a iniciar sesión.");
+  }
+
+  if (!res.ok) {
+    // intentamos leer error como texto
+    const txt = await res.text().catch(() => "");
+    throw new Error(`No se pudo descargar el Excel (HTTP ${res.status}). ${txt}`);
+  }
+
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
 
@@ -112,5 +134,21 @@ async function downloadExcel(endpoint, filename) {
   a.click();
   a.remove();
 
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+// (Compatibilidad) si ya llamabas downloadExcel(...) en tu código viejo
+// ahora internamente usa downloadXlsx
+async function downloadExcel(endpoint, filename) {
+  return downloadXlsx(endpoint, filename);
+}
+
+function logout() {
+  localStorage.removeItem("token");
+  localStorage.removeItem("user");
+  location.href = "login.html";
+}
+
+function money(n) {
+  return (Number(n) || 0).toFixed(2);
 }
