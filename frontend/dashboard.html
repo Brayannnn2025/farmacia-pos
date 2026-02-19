@@ -47,7 +47,7 @@
     <a class="link" href="ventas.html">Historial</a>
     <a class="link" href="admin_productos.html" data-role="admin">Productos</a>
     <a class="link" href="usuarios.html" data-role="admin">Usuarios</a>
-    <button class="btn" onclick="logout()">Salir</button>
+    <button class="btn" type="button" onclick="logout()">Salir</button>
   </nav>
 </header>
 
@@ -79,30 +79,33 @@
 
   <!-- Acciones rápidas -->
   <div class="actions">
-    <button class="btn2 primary" onclick="location.href='pos.html'">Ir a Caja</button>
-    <button class="btn2" onclick="location.href='admin_productos.html'" data-role="admin">Gestionar Productos</button>
-    <button class="btn2" onclick="location.href='ventas.html'">Ver Historial</button>
+    <button class="btn2 primary" type="button" onclick="location.href='pos.html'">Ir a Caja</button>
+    <button class="btn2" type="button" onclick="location.href='admin_productos.html'" data-role="admin">Gestionar Productos</button>
+    <button class="btn2" type="button" onclick="location.href='ventas.html'">Ver Historial</button>
   </div>
 
-  <!-- ✅ EXPORTAR EXCEL (ARREGLADO) -->
+  <!-- ✅ EXPORTAR EXCEL (ARREGLADO A PRUEBA DE BUGS) -->
   <section class="card" style="margin-top:14px;">
     <h2 style="margin-bottom:6px;">Exportar Excel</h2>
     <div class="small" style="margin-bottom:10px;">Inventario completo o ventas por rango.</div>
 
-    <div class="export-grid" id="exportBox">
-      <div class="small muted">
-        Ventas por rango:
-      </div>
+    <!-- IMPORTANTE: form sin action + bloqueo de submit -->
+    <form id="exportForm" onsubmit="return false">
+      <div class="export-grid" id="exportBox">
+        <div class="small muted">
+          Ventas por rango:
+        </div>
 
-      <input id="expFrom" type="date" />
-      <input id="expTo" type="date" />
+        <input id="expFrom" type="date" autocomplete="off" />
+        <input id="expTo" type="date" autocomplete="off" />
 
-      <div class="export-actions">
-        <!-- Inventario: admin -->
-        <button class="btn2" id="btnInv" data-role="admin">Descargar Inventario</button>
-        <button class="btn2 primary" id="btnSales">Descargar Ventas</button>
+        <div class="export-actions">
+          <!-- 👇 type="button" SIEMPRE (no submit) -->
+          <button class="btn2" id="btnInv" type="button" data-role="admin">Descargar Inventario</button>
+          <button class="btn2 primary" id="btnSales" type="button">Descargar Ventas</button>
+        </div>
       </div>
-    </div>
+    </form>
   </section>
 
   <!-- Tablas -->
@@ -146,12 +149,14 @@
 
   function badge(text, cls){ return `<span class="badge ${cls||''}">${text}</span>`; }
 
-  // ✅ Evita que clicks en inputs disparen cosas raras (bubbling)
-  ["expFrom","expTo"].forEach(id=>{
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener("click", (e)=> e.stopPropagation());
-  });
+  // ✅ Candado 1: Bloquear submit + Enter del form (esto mata el bug)
+  const exportForm = document.getElementById("exportForm");
+  if (exportForm) {
+    exportForm.addEventListener("submit", (e) => e.preventDefault());
+    exportForm.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") e.preventDefault();
+    });
+  }
 
   // Defaults de fechas: hoy
   function ymd(d){
@@ -172,9 +177,7 @@
   if (btnInv) {
     btnInv.addEventListener("click", async (e)=>{
       e.preventDefault();
-      e.stopPropagation();
       const filename = `inventario_${ymd(new Date())}.xlsx`;
-      // Endpoint correcto:
       await downloadExcel("/api/export/inventory.xlsx", filename);
     });
   }
@@ -184,7 +187,6 @@
   if (btnSales) {
     btnSales.addEventListener("click", async (e)=>{
       e.preventDefault();
-      e.stopPropagation();
       const f = expFrom?.value || "";
       const t = expTo?.value || "";
       const params = new URLSearchParams();
@@ -196,7 +198,6 @@
   }
 
   async function loadDashboard(){
-    // ✅ OJO: aquí usamos tu endpoint real /api/dashboard/summary?threshold=...&days=...
     const sum = await api(`/api/dashboard/summary?threshold=${LOW_LIMIT}&days=${EXP_DAYS}`);
 
     document.getElementById("kpiSalesToday").textContent = "S/ " + money(sum?.today?.total || 0);
@@ -204,7 +205,6 @@
     document.getElementById("kpiLow").textContent = String(sum?.low_stock?.count || 0);
     document.getElementById("kpiExp").textContent = String(sum?.expiring?.count || 0);
 
-    // Low stock list
     const low = await api(`/api/alerts/low-stock?threshold=${LOW_LIMIT}`);
     document.getElementById("lowInfo").textContent =
       `Mostrando ${low.count} productos con stock <= ${LOW_LIMIT}`;
@@ -221,7 +221,6 @@
         </tr>`;
       }).join("") || `<tr><td colspan="5" class="small">Sin alertas ✅</td></tr>`;
 
-    // Expiring list
     const exp = await api(`/api/alerts/expiring?days=${EXP_DAYS}`);
     document.getElementById("expInfo").textContent =
       `Vencen dentro de ${EXP_DAYS} días: ${exp.count}`;
