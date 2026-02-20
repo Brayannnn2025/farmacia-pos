@@ -187,6 +187,9 @@ function printTicketFromModal() {
     return;
   }
 
+  // 80mm por defecto. Si quieres 58mm, cambia a 58mm.
+  const PAPER = "80mm";
+
   w.document.open();
   w.document.write(`
     <html>
@@ -195,8 +198,11 @@ function printTicketFromModal() {
         <meta name="viewport" content="width=device-width, initial-scale=1"/>
         <title>Ticket</title>
         <style>
-          @page { margin: 0; }
-          html,body{ margin:0; padding:0; }
+          @page { size: ${PAPER} auto; margin: 0; }
+          html, body { margin: 0; padding: 0; }
+          body { width: ${PAPER}; }
+          /* evita que el navegador meta escalado raro */
+          * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         </style>
       </head>
       <body>${html}</body>
@@ -205,7 +211,7 @@ function printTicketFromModal() {
   w.document.close();
   w.focus();
 
-  setTimeout(() => w.print(), 250);
+  setTimeout(() => w.print(), 200);
 }
 
 
