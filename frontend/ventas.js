@@ -188,7 +188,7 @@ function printTicketFromModal() {
   }
 
   // 80mm por defecto. Si quieres 58mm, cambia a 58mm.
-  const PAPER = "80mm";
+  const PAPER = "58mm";
 
   w.document.open();
   w.document.write(`
