@@ -179,16 +179,42 @@ function printTicketFromModal() {
     return;
   }
 
-  const html = ticket.innerHTML;
+  // 80mm por defecto. Si tu impresora es 58mm cambia aquí:
+  const PAPER = "80mm"; // "58mm"
+
+  const ticketCSS = `
+    @page { size: ${PAPER} auto; margin: 0; }
+    html, body { margin: 0; padding: 0; }
+    body { width: ${PAPER}; }
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+    .t80{ width:80mm; padding:8px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace; color:#000; }
+    .t58{ width:58mm; padding:8px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace; color:#000; }
+
+    .t-center{text-align:center}
+    .t-right{text-align:right}
+    .t-title{ font-size:18px; font-weight:900; letter-spacing:.5px; }
+    .t-sub{ font-size:11px; margin-top:3px; }
+    .t-muted{ color:#111; opacity:.85; font-size:11px }
+    .t-bold{ font-weight:900; }
+    .t-hr{ border-top:1px dashed #000; margin:8px 0; }
+    .t-row{ display:flex; justify-content:space-between; gap:10px; font-size:12px; }
+    .t-cols{ display:flex; gap:6px; font-size:11px; margin-bottom:6px; }
+    .t-line{ display:flex; gap:6px; font-size:12px; margin:2px 0; }
+    .w-name{ flex: 1 1 auto; min-width:0; }
+    .w-qty{ width:10mm; }
+    .w-sub{ width:18mm; }
+    .t-name{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  `;
+
+  // OJO: usa outerHTML para no perder el wrapper del ticket
+  const html = ticket.outerHTML;
 
   const w = window.open("", "_blank", "width=420,height=700");
   if (!w) {
     showErr("⚠️ El navegador bloqueó la impresión. Permite popups y reintenta.");
     return;
   }
-
-  // 80mm por defecto. Si quieres 58mm, cambia a 58mm.
-  const PAPER = "58mm";
 
   w.document.open();
   w.document.write(`
@@ -197,13 +223,7 @@ function printTicketFromModal() {
         <meta charset="utf-8"/>
         <meta name="viewport" content="width=device-width, initial-scale=1"/>
         <title>Ticket</title>
-        <style>
-          @page { size: ${PAPER} auto; margin: 0; }
-          html, body { margin: 0; padding: 0; }
-          body { width: ${PAPER}; }
-          /* evita que el navegador meta escalado raro */
-          * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-        </style>
+        <style>${ticketCSS}</style>
       </head>
       <body>${html}</body>
     </html>
