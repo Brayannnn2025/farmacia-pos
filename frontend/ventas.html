@@ -16,7 +16,7 @@
     .errmsg{color:#ef4444;margin-top:8px}
   </style>
 </head>
-<body>
+<body> 
 <header>
   <div class="brand">
     Historial de ventas <span class="badge" id="roleTag" style="margin-left:8px;"></span>
@@ -101,17 +101,63 @@
       <button id="btnPrint">Reimprimir ticket</button>
     </div>
 
-    <div id="ticket" style="display:none;">
-      <div style="font-family:Arial;padding:10px;">
-        <h2 style="margin:0;">FARMACIA</h2>
-        <div id="ticketMeta" class="small" style="margin:6px 0;"></div>
-        <hr/>
-        <div id="ticketItems"></div>
-        <hr/>
-        <h3 style="margin:8px 0;">Total: S/ <span id="ticketTotal">0.00</span></h3>
-        <div class="small">Gracias por su compra.</div>
-      </div>
+<!-- Ticket térmico (80mm por defecto) -->
+<div id="ticket" style="display:none;">
+  <div class="t80" id="ticketPaper">
+    <div class="t-center">
+      <div class="t-title">FARMACIA</div>
+      <div class="t-sub" id="ticketHeaderExtra">RUC: — · Dirección: —</div>
+      <div class="t-sub" id="ticketMeta"></div>
     </div>
+
+    <div class="t-hr"></div>
+
+    <div class="t-cols t-muted">
+      <div class="w-name">Producto</div>
+      <div class="w-qty t-right">Cant</div>
+      <div class="w-sub t-right">Sub</div>
+    </div>
+
+    <div id="ticketItems"></div>
+
+    <div class="t-hr"></div>
+
+    <div class="t-row t-bold">
+      <div>TOTAL</div>
+      <div class="t-right">S/ <span id="ticketTotal"></span></div>
+    </div>
+
+    <div class="t-hr"></div>
+
+    <div class="t-center t-muted" style="margin-top:10px">
+      Gracias por su compra.
+    </div>
+  </div>
+</div>
+
+<style>
+  /* ===== Ticket térmico ===== */
+  .t80{ width:80mm; padding:8px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color:#000; }
+  .t58{ width:58mm; padding:8px; font-family: ui-monospace, monospace; color:#000; }
+
+  .t-center{text-align:center}
+  .t-right{text-align:right}
+  .t-title{ font-size:18px; font-weight:900; letter-spacing:.5px; }
+  .t-sub{ font-size:11px; margin-top:3px; }
+  .t-muted{ color:#111; opacity:.85; font-size:11px }
+  .t-bold{ font-weight:900; }
+  .t-hr{ border-top:1px dashed #000; margin:8px 0; }
+  .t-row{ display:flex; justify-content:space-between; gap:10px; font-size:12px; }
+  .t-cols{ display:flex; gap:6px; font-size:11px; margin-bottom:6px; }
+  .t-line{ display:flex; gap:6px; font-size:12px; margin:2px 0; }
+  .w-name{ flex: 1 1 auto; min-width:0; }
+  .w-qty{ width:10mm; }
+  .w-sub{ width:18mm; }
+  .t-name{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+  @media print { body{ margin:0; } }
+</style>
+  
   </div>
 </div>
 
