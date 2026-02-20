@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Dashboard | POS Farmacia</title>
   <link rel="stylesheet" href="styles.css"/>
+
   <style>
     .kpi-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
     @media(max-width:980px){.kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
@@ -13,38 +14,48 @@
     .kpi .t{font-size:12px;color:#64748b}
     .kpi .v{font-size:26px;font-weight:800;margin-top:6px}
     .kpi .s{font-size:12px;color:#64748b;margin-top:6px}
-
     .grid2{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}
     @media(max-width:980px){.grid2{grid-template-columns:1fr;}}
-
     .badge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;border:1px solid #e5e7eb;background:#f8fafc}
     .danger{background:#fff1f2;border-color:#fecdd3;color:#9f1239}
     .warn{background:#fffbeb;border-color:#fde68a;color:#92400e}
     .ok{background:#ecfdf5;border-color:#a7f3d0;color:#065f46}
-
     table{width:100%;border-collapse:collapse}
     th,td{padding:10px;border-bottom:1px solid #eef2f7;text-align:left;font-size:14px}
     th{font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:.04em}
 
     .actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
-    .btn2{padding:10px 12px;border-radius:12px;border:1px solid #e5e7eb;background:#fff;font-weight:700;cursor:pointer}
+    .btn2{
+      padding:10px 12px;border-radius:12px;border:1px solid #e5e7eb;
+      background:#fff;font-weight:700;cursor:pointer;
+      display:inline-flex;align-items:center;justify-content:center; /* ✅ para que se vea siempre */
+    }
     .btn2.primary{background:#0ea5e9;border-color:#0ea5e9;color:#fff}
 
     /* Export */
-    .export-grid{display:grid;grid-template-columns:1fr 220px 220px auto;gap:10px;align-items:center}
-    @media(max-width:980px){.export-grid{grid-template-columns:1fr;}}
-    .export-actions{
-      display:flex;
+    .export-grid{
+      display:grid;
+      grid-template-columns: 160px 220px 220px 1fr;
       gap:10px;
-      flex-wrap:wrap;
-      justify-content:flex-end;
-      align-items:center;
+      align-items:center
     }
-    .export-actions .btn2{white-space:nowrap}
-    /* ✅ evita que el botón se estire y "pise" el espacio de al lado */
-    #btnSales,#btnInv{width:auto !important}
+    @media(max-width:980px){.export-grid{grid-template-columns:1fr;}}
+    .export-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+    .export-actions .btn2{white-space:nowrap;min-width:190px}
+
+    /* ✅ FORZAR VISIBILIDAD DEL BOTÓN INVENTARIO (por si styles.css lo “rompe”) */
+    #btnInv{
+      background:#fff !important;
+      color:#0f172a !important;
+      border:1px solid #e5e7eb !important;
+      opacity:1 !important;
+      visibility:visible !important;
+      font-size:14px !important;
+      line-height:1 !important;
+    }
   </style>
 </head>
+
 <body>
 
 <header class="top">
@@ -95,19 +106,22 @@
     <button class="btn2" type="button" onclick="location.href='ventas.html'">Ver Historial</button>
   </div>
 
-  <!-- ✅ EXPORTAR EXCEL (CORREGIDO: solo descarga al hacer click en el botón) -->
+  <!-- EXPORTAR EXCEL -->
   <section class="card" style="margin-top:14px;">
     <h2 style="margin-bottom:6px;">Exportar Excel</h2>
     <div class="small" style="margin-bottom:10px;">Inventario completo o ventas por rango.</div>
 
-    <div class="export-grid" id="exportBox">
+    <div class="export-grid">
       <div class="small muted">Ventas por rango:</div>
 
       <input id="expFrom" type="date" />
       <input id="expTo" type="date" />
 
       <div class="export-actions">
-        <button class="btn2" id="btnInv" type="button" data-role="admin">Descargar Inventario</button>
+        <!-- ✅ Inventario solo para admin (lo ocultamos por JS, no con data-role) -->
+        <button class="btn2" id="btnInv" type="button">Descargar Inventario</button>
+
+        <!-- ✅ Ventas -->
         <button class="btn2 primary" id="btnSales" type="button">Descargar Ventas</button>
       </div>
     </div>
@@ -154,7 +168,6 @@
 
   function badge(text, cls){ return `<span class="badge ${cls||''}">${text}</span>`; }
 
-  // Helpers fecha
   function ymd(d){
     const x = new Date(d);
     const y = x.getFullYear();
@@ -163,27 +176,31 @@
     return `${y}-${m}-${dd}`;
   }
 
-  // Defaults: hoy
+  // Defaults fechas
   const today = ymd(new Date());
   const expFrom = document.getElementById("expFrom");
   const expTo = document.getElementById("expTo");
   if (expFrom && !expFrom.value) expFrom.value = today;
   if (expTo && !expTo.value) expTo.value = today;
 
-  // ✅ Descarga Inventario (solo al click del botón)
+  // ✅ Mostrar inventario solo si admin (NO data-role)
   const btnInv = document.getElementById("btnInv");
   if (btnInv) {
-    btnInv.addEventListener("click", async (e) => {
-      e.preventDefault();
-      const filename = `inventario_${ymd(new Date())}.xlsx`;
-      await downloadExcel("/api/export/inventory.xlsx", filename);
-    });
+    if (!isAdmin()) {
+      btnInv.style.display = "none";
+    } else {
+      btnInv.addEventListener("click", async (e)=>{
+        e.preventDefault();
+        const filename = `inventario_${ymd(new Date())}.xlsx`;
+        await downloadExcel("/api/export/inventory.xlsx", filename);
+      });
+    }
   }
 
-  // ✅ Descarga Ventas (solo al click del botón)
+  // ✅ Descargar ventas SOLO al click del botón
   const btnSales = document.getElementById("btnSales");
   if (btnSales) {
-    btnSales.addEventListener("click", async (e) => {
+    btnSales.addEventListener("click", async (e)=>{
       e.preventDefault();
       const f = expFrom?.value || "";
       const t = expTo?.value || "";
@@ -196,7 +213,6 @@
   }
 
   async function loadDashboard(){
-    // Endpoint real:
     const sum = await api(`/api/dashboard/summary?threshold=${LOW_LIMIT}&days=${EXP_DAYS}`);
 
     document.getElementById("kpiSalesToday").textContent = "S/ " + money(sum?.today?.total || 0);
@@ -204,11 +220,8 @@
     document.getElementById("kpiLow").textContent = String(sum?.low_stock?.count || 0);
     document.getElementById("kpiExp").textContent = String(sum?.expiring?.count || 0);
 
-    // Low stock
     const low = await api(`/api/alerts/low-stock?threshold=${LOW_LIMIT}`);
-    document.getElementById("lowInfo").textContent =
-      `Mostrando ${low.count} productos con stock <= ${LOW_LIMIT}`;
-
+    document.getElementById("lowInfo").textContent = `Mostrando ${low.count} productos con stock <= ${LOW_LIMIT}`;
     document.getElementById("lowBody").innerHTML =
       (low.items || []).map(p=>{
         const st = (p.stock<=0) ? badge("SIN STOCK", "danger") : badge("BAJO", "warn");
@@ -221,11 +234,8 @@
         </tr>`;
       }).join("") || `<tr><td colspan="5" class="small">Sin alertas ✅</td></tr>`;
 
-    // Expiring
     const exp = await api(`/api/alerts/expiring?days=${EXP_DAYS}`);
-    document.getElementById("expInfo").textContent =
-      `Vencen dentro de ${EXP_DAYS} días: ${exp.count}`;
-
+    document.getElementById("expInfo").textContent = `Vencen dentro de ${EXP_DAYS} días: ${exp.count}`;
     document.getElementById("expBody").innerHTML =
       (exp.items || []).slice(0,50).map(p=>{
         const st = badge("POR VENCER", "warn");
