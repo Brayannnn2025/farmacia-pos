@@ -25,23 +25,62 @@
     th{font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:.04em}
 
     .actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
+
+    /* ✅ FIX PRINCIPAL:
+       En tu styles.css probablemente hay button { color:#fff; }.
+       Entonces el texto de .btn2 se vuelve blanco y se "pierde" sobre fondo blanco.
+       Aquí lo forzamos a oscuro. */
     .btn2{
-      padding:10px 12px;border-radius:12px;border:1px solid #e5e7eb;
-      background:#fff;font-weight:700;cursor:pointer;
-      display:inline-flex;align-items:center;justify-content:center; /* ✅ para que se vea siempre */
+      padding:10px 12px;
+      border-radius:12px;
+      border:1px solid #e5e7eb;
+      background:#fff;
+
+      /* 🔥 Fuerza texto visible */
+      color:#0f172a !important;
+
+      font-weight:700;
+      cursor:pointer;
+
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:8px;
+
+      line-height:1;
+      white-space:nowrap;
     }
-    .btn2.primary{background:#0ea5e9;border-color:#0ea5e9;color:#fff}
+    .btn2.primary{
+      background:#0ea5e9;
+      border-color:#0ea5e9;
+
+      /* Solo el primary debe ser blanco */
+      color:#fff !important;
+    }
 
     /* Export */
     .export-grid{
       display:grid;
-      grid-template-columns: 160px 220px 220px 1fr;
+      grid-template-columns: 160px 220px 220px auto; /* ✅ el último auto, NO 1fr */
       gap:10px;
-      align-items:center
+      align-items:center;
     }
-    @media(max-width:980px){.export-grid{grid-template-columns:1fr;}}
-    .export-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
-    .export-actions .btn2{white-space:nowrap;min-width:190px}
+    @media(max-width:980px){
+      .export-grid{grid-template-columns:1fr;}
+    }
+
+    /* ✅ Los botones de export NO deben estirarse ni tener min-width grande */
+    .export-actions{
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      justify-content:flex-end;
+      align-items:center;
+    }
+    .export-actions .btn2{
+      min-width:0 !important; /* ✅ quita el estiramiento */
+      width:auto !important;
+    }
 
     /* ✅ FORZAR VISIBILIDAD DEL BOTÓN INVENTARIO (por si styles.css lo “rompe”) */
     #btnInv{
@@ -118,10 +157,10 @@
       <input id="expTo" type="date" />
 
       <div class="export-actions">
-        <!-- ✅ Inventario solo para admin (lo ocultamos por JS, no con data-role) -->
+        <!-- Inventario solo admin (lo ocultamos por JS) -->
         <button class="btn2" id="btnInv" type="button">Descargar Inventario</button>
 
-        <!-- ✅ Ventas -->
+        <!-- Ventas -->
         <button class="btn2 primary" id="btnSales" type="button">Descargar Ventas</button>
       </div>
     </div>
@@ -183,7 +222,7 @@
   if (expFrom && !expFrom.value) expFrom.value = today;
   if (expTo && !expTo.value) expTo.value = today;
 
-  // ✅ Mostrar inventario solo si admin (NO data-role)
+  // Mostrar inventario solo si admin
   const btnInv = document.getElementById("btnInv");
   if (btnInv) {
     if (!isAdmin()) {
@@ -191,17 +230,19 @@
     } else {
       btnInv.addEventListener("click", async (e)=>{
         e.preventDefault();
+        e.stopPropagation();
         const filename = `inventario_${ymd(new Date())}.xlsx`;
         await downloadExcel("/api/export/inventory.xlsx", filename);
       });
     }
   }
 
-  // ✅ Descargar ventas SOLO al click del botón
+  // Descargar ventas SOLO al click del botón
   const btnSales = document.getElementById("btnSales");
   if (btnSales) {
     btnSales.addEventListener("click", async (e)=>{
       e.preventDefault();
+      e.stopPropagation();
       const f = expFrom?.value || "";
       const t = expTo?.value || "";
       const params = new URLSearchParams();
