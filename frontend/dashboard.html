@@ -13,12 +13,15 @@
     .kpi .t{font-size:12px;color:#64748b}
     .kpi .v{font-size:26px;font-weight:800;margin-top:6px}
     .kpi .s{font-size:12px;color:#64748b;margin-top:6px}
+
     .grid2{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}
     @media(max-width:980px){.grid2{grid-template-columns:1fr;}}
+
     .badge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;border:1px solid #e5e7eb;background:#f8fafc}
     .danger{background:#fff1f2;border-color:#fecdd3;color:#9f1239}
     .warn{background:#fffbeb;border-color:#fde68a;color:#92400e}
     .ok{background:#ecfdf5;border-color:#a7f3d0;color:#065f46}
+
     table{width:100%;border-collapse:collapse}
     th,td{padding:10px;border-bottom:1px solid #eef2f7;text-align:left;font-size:14px}
     th{font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:.04em}
@@ -30,8 +33,16 @@
     /* Export */
     .export-grid{display:grid;grid-template-columns:1fr 220px 220px auto;gap:10px;align-items:center}
     @media(max-width:980px){.export-grid{grid-template-columns:1fr;}}
-    .export-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+    .export-actions{
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      justify-content:flex-end;
+      align-items:center;
+    }
     .export-actions .btn2{white-space:nowrap}
+    /* ✅ evita que el botón se estire y "pise" el espacio de al lado */
+    #btnSales,#btnInv{width:auto !important}
   </style>
 </head>
 <body>
@@ -47,7 +58,7 @@
     <a class="link" href="ventas.html">Historial</a>
     <a class="link" href="admin_productos.html" data-role="admin">Productos</a>
     <a class="link" href="usuarios.html" data-role="admin">Usuarios</a>
-    <button class="btn" type="button" onclick="logout()">Salir</button>
+    <button class="btn" onclick="logout()">Salir</button>
   </nav>
 </header>
 
@@ -84,28 +95,22 @@
     <button class="btn2" type="button" onclick="location.href='ventas.html'">Ver Historial</button>
   </div>
 
-  <!-- ✅ EXPORTAR EXCEL (ARREGLADO A PRUEBA DE BUGS) -->
+  <!-- ✅ EXPORTAR EXCEL (CORREGIDO: solo descarga al hacer click en el botón) -->
   <section class="card" style="margin-top:14px;">
     <h2 style="margin-bottom:6px;">Exportar Excel</h2>
     <div class="small" style="margin-bottom:10px;">Inventario completo o ventas por rango.</div>
 
-    <!-- IMPORTANTE: form sin action + bloqueo de submit -->
-    <form id="exportForm" onsubmit="return false">
-      <div class="export-grid" id="exportBox">
-        <div class="small muted">
-          Ventas por rango:
-        </div>
+    <div class="export-grid" id="exportBox">
+      <div class="small muted">Ventas por rango:</div>
 
-        <input id="expFrom" type="date" autocomplete="off" />
-        <input id="expTo" type="date" autocomplete="off" />
+      <input id="expFrom" type="date" />
+      <input id="expTo" type="date" />
 
-        <div class="export-actions">
-          <!-- 👇 type="button" SIEMPRE (no submit) -->
-          <button class="btn2" id="btnInv" type="button" data-role="admin">Descargar Inventario</button>
-          <button class="btn2 primary" id="btnSales" type="button">Descargar Ventas</button>
-        </div>
+      <div class="export-actions">
+        <button class="btn2" id="btnInv" type="button" data-role="admin">Descargar Inventario</button>
+        <button class="btn2 primary" id="btnSales" type="button">Descargar Ventas</button>
       </div>
-    </form>
+    </div>
   </section>
 
   <!-- Tablas -->
@@ -149,16 +154,7 @@
 
   function badge(text, cls){ return `<span class="badge ${cls||''}">${text}</span>`; }
 
-  // ✅ Candado 1: Bloquear submit + Enter del form (esto mata el bug)
-  const exportForm = document.getElementById("exportForm");
-  if (exportForm) {
-    exportForm.addEventListener("submit", (e) => e.preventDefault());
-    exportForm.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") e.preventDefault();
-    });
-  }
-
-  // Defaults de fechas: hoy
+  // Helpers fecha
   function ymd(d){
     const x = new Date(d);
     const y = x.getFullYear();
@@ -166,26 +162,28 @@
     const dd = String(x.getDate()).padStart(2,"0");
     return `${y}-${m}-${dd}`;
   }
+
+  // Defaults: hoy
   const today = ymd(new Date());
   const expFrom = document.getElementById("expFrom");
   const expTo = document.getElementById("expTo");
   if (expFrom && !expFrom.value) expFrom.value = today;
   if (expTo && !expTo.value) expTo.value = today;
 
-  // ✅ Botón inventario
+  // ✅ Descarga Inventario (solo al click del botón)
   const btnInv = document.getElementById("btnInv");
   if (btnInv) {
-    btnInv.addEventListener("click", async (e)=>{
+    btnInv.addEventListener("click", async (e) => {
       e.preventDefault();
       const filename = `inventario_${ymd(new Date())}.xlsx`;
       await downloadExcel("/api/export/inventory.xlsx", filename);
     });
   }
 
-  // ✅ Botón ventas (rango)
+  // ✅ Descarga Ventas (solo al click del botón)
   const btnSales = document.getElementById("btnSales");
   if (btnSales) {
-    btnSales.addEventListener("click", async (e)=>{
+    btnSales.addEventListener("click", async (e) => {
       e.preventDefault();
       const f = expFrom?.value || "";
       const t = expTo?.value || "";
@@ -198,6 +196,7 @@
   }
 
   async function loadDashboard(){
+    // Endpoint real:
     const sum = await api(`/api/dashboard/summary?threshold=${LOW_LIMIT}&days=${EXP_DAYS}`);
 
     document.getElementById("kpiSalesToday").textContent = "S/ " + money(sum?.today?.total || 0);
@@ -205,6 +204,7 @@
     document.getElementById("kpiLow").textContent = String(sum?.low_stock?.count || 0);
     document.getElementById("kpiExp").textContent = String(sum?.expiring?.count || 0);
 
+    // Low stock
     const low = await api(`/api/alerts/low-stock?threshold=${LOW_LIMIT}`);
     document.getElementById("lowInfo").textContent =
       `Mostrando ${low.count} productos con stock <= ${LOW_LIMIT}`;
@@ -221,6 +221,7 @@
         </tr>`;
       }).join("") || `<tr><td colspan="5" class="small">Sin alertas ✅</td></tr>`;
 
+    // Expiring
     const exp = await api(`/api/alerts/expiring?days=${EXP_DAYS}`);
     document.getElementById("expInfo").textContent =
       `Vencen dentro de ${EXP_DAYS} días: ${exp.count}`;
