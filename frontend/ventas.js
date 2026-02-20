@@ -106,6 +106,7 @@ function renderDetail(data) {
   const meta = qs("meta");
   const total = qs("total");
   const itemsDiv = qs("items");
+
   const ticketMeta = qs("ticketMeta");
   const ticketTotal = qs("ticketTotal");
   const ticketItems = qs("ticketItems");
@@ -113,6 +114,7 @@ function renderDetail(data) {
   if (meta) meta.textContent = `Venta #${sale.id} · ${fmtDate(sale.date)} · Pago: ${sale.payment_method}`;
   if (total) total.textContent = money(Number(sale.total || 0));
 
+  // Tabla detalle del modal (se queda igual)
   if (itemsDiv) {
     itemsDiv.innerHTML = `
       <table class="table">
@@ -136,18 +138,21 @@ function renderDetail(data) {
     `;
   }
 
+  // ===== Ticket térmico =====
   if (ticketMeta) ticketMeta.textContent = `Venta #${sale.id} · ${fmtDate(sale.date)} · Pago: ${sale.payment_method}`;
   if (ticketTotal) ticketTotal.textContent = money(Number(sale.total || 0));
 
   if (ticketItems) {
     ticketItems.innerHTML = items.map(it => `
-      <div style="display:flex;justify-content:space-between;gap:12px;">
-        <div>${it.name} <span style="color:#555;">x${it.qty}</span></div>
-        <div>S/ ${money(Number(it.subtotal))}</div>
+      <div class="t-line">
+        <div class="w-name t-name">${it.name}</div>
+        <div class="w-qty t-right">${it.qty}</div>
+        <div class="w-sub t-right">S/ ${money(Number(it.subtotal))}</div>
       </div>
     `).join("");
   }
 }
+
 
 async function openSale(id) {
   try {
@@ -182,16 +187,16 @@ function printTicketFromModal() {
     return;
   }
 
+  w.document.open();
   w.document.write(`
     <html>
       <head>
         <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1"/>
         <title>Ticket</title>
         <style>
-          body{font-family:Arial;margin:0;padding:0;}
-          .small{font-size:12px;color:#555;}
-          hr{border:none;border-top:1px solid #ddd;margin:10px 0;}
-          h2,h3{margin:0;}
+          @page { margin: 0; }
+          html,body{ margin:0; padding:0; }
         </style>
       </head>
       <body>${html}</body>
@@ -200,10 +205,9 @@ function printTicketFromModal() {
   w.document.close();
   w.focus();
 
-  setTimeout(() => {
-    w.print();
-  }, 250);
+  setTimeout(() => w.print(), 250);
 }
+
 
 // =======================
 // INIT
