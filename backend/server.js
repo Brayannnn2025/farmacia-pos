@@ -23,6 +23,17 @@ const JWT_SECRET = "cambia_esto_por_algo_mas_largo_y_secreto";
 const FRONTEND_DIR = path.join(__dirname, "..", "frontend");
 app.use(express.static(FRONTEND_DIR));
 
+// =========================
+// FETCH (para Node < 18)
+// =========================
+// Node 18+ ya trae fetch global.
+// Si tu Node es < 18, habilitamos fetch con node-fetch (import dinámico).
+// NOTA: Si luego te sale "fetch is not defined", instala en EC2:
+//   cd backend && npm i node-fetch
+const fetchFn = global.fetch
+  ? global.fetch.bind(global)
+  : (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
+
 // Helpers sqlite -> promises
 function run(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -506,6 +517,55 @@ app.get("/api/dashboard/summary", auth, requireRole("admin", "cajero"), async (r
   });
 });
 
+// ===============================
+// INFORMACIÓN FARMACÉUTICA (OpenFDA)
+// Visible para admin y cajero
+// GET /api/drug-info?name=paracetamol
+// ===============================
+app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res) => {
+  try {
+    const name = String(req.query.name || "").trim();
+    if (!name) return res.status(400).json({ error: "Falta name" });
+
+    // Buscar por nombre comercial o genérico
+    const q = encodeURIComponent(`openfda.brand_name:"${name}" OR openfda.generic_name:"${name}"`);
+    const url = `https://api.fda.gov/drug/label.json?search=${q}&limit=1`;
+
+    const r = await fetchFn(url);
+    const data = await r.json();
+
+    if (!data.results || data.results.length === 0) {
+      return res.json({ found: false, query: name, source: "openfda" });
+    }
+
+    const d = data.results[0];
+
+    const pick = (x) => (Array.isArray(x) ? (x[0] || "") : (x || ""));
+    const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
+
+    const out = {
+      found: true,
+      query: name,
+      brand_name: pick(d.openfda?.brand_name) || name,
+      generic_name: pick(d.openfda?.generic_name) || "",
+      active_ingredient: clean(pick(d.active_ingredient) || pick(d.openfda?.substance_name) || ""),
+      indications: clean(pick(d.indications_and_usage) || ""),
+      dosage: clean(pick(d.dosage_and_administration) || ""),
+      warnings: clean(pick(d.warnings) || pick(d.boxed_warning) || ""),
+      contraindications: clean(pick(d.contraindications) || ""),
+      interactions: clean(pick(d.drug_interactions) || ""),
+      pregnancy: clean(pick(d.pregnancy) || pick(d.pregnancy_or_breast_feeding) || ""),
+      storage: clean(pick(d.storage_and_handling) || ""),
+      source: "openfda"
+    };
+
+    res.json(out);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Error consultando OpenFDA" });
+  }
+});
+
 // ==================== EXPORT EXCEL ====================
 const ExcelJS = require("exceljs");
 
@@ -543,7 +603,6 @@ app.get("/api/export/inventory.xlsx", auth, requireRole("admin", "cajero"), asyn
       { header: "Estado", key: "estado", width: 14 },
     ];
 
-    // Header style
     ws.getRow(1).font = { bold: true };
     ws.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
 
@@ -575,15 +634,10 @@ app.get("/api/export/inventory.xlsx", auth, requireRole("admin", "cajero"), asyn
       });
     }
 
-    // Formatos numéricos
     ws.getColumn("buy_price").numFmt = '"S/ "0.00';
     ws.getColumn("sell_price").numFmt = '"S/ "0.00';
 
-    // Filtro + freeze
-    ws.autoFilter = {
-      from: "A1",
-      to: "I1",
-    };
+    ws.autoFilter = { from: "A1", to: "I1" };
     ws.views = [{ state: "frozen", ySplit: 1 }];
 
     const filename = `inventario_${new Date().toISOString().slice(0, 10)}.xlsx`;
@@ -643,7 +697,6 @@ app.get("/api/export/sales.xlsx", auth, requireRole("admin", "cajero"), async (r
     ws.autoFilter = { from: "A1", to: "D1" };
     ws.views = [{ state: "frozen", ySplit: 1 }];
 
-    // (Opcional PRO) Hoja 2: Detalle de items vendidos en rango
     const ws2 = wb.addWorksheet("Detalle");
     ws2.columns = [
       { header: "ID Venta", key: "sale_id", width: 10 },
@@ -696,7 +749,6 @@ app.get("/api/export/sales.xlsx", auth, requireRole("admin", "cajero"), async (r
     res.status(500).json({ error: "No se pudo exportar ventas" });
   }
 });
-
 
 // =========================
 // START
