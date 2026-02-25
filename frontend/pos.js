@@ -79,7 +79,7 @@ function stockClass(stock) {
    Totales
 ========================= */
 function recalc() {
-  const total = cart.reduce((acc, it) => acc + (it.price_unit * it.qty), 0);
+  const total = cart.reduce((acc, it) => acc + it.price_unit * it.qty, 0);
   qs("total").textContent = money(total);
 }
 
@@ -121,15 +121,15 @@ function renderCart() {
       </div>
     `;
 
-    div.querySelectorAll("button").forEach(btn => {
+    div.querySelectorAll("button").forEach((btn) => {
       btn.onclick = () => {
         const act = btn.getAttribute("data-act");
         if (act === "minus") {
           it.qty -= 1;
-          if (it.qty <= 0) cart = cart.filter(x => x.product_id !== it.product_id);
+          if (it.qty <= 0) cart = cart.filter((x) => x.product_id !== it.product_id);
         }
         if (act === "plus") it.qty += 1;
-        if (act === "del") cart = cart.filter(x => x.product_id !== it.product_id);
+        if (act === "del") cart = cart.filter((x) => x.product_id !== it.product_id);
 
         renderCart();
       };
@@ -157,7 +157,7 @@ function addToCart(p) {
     setMsg("", true);
   }
 
-  const found = cart.find(x => x.product_id === p.id);
+  const found = cart.find((x) => x.product_id === p.id);
   if (found) {
     found.qty += 1;
   } else {
@@ -167,7 +167,7 @@ function addToCart(p) {
       name: p.name,
       qty: 1,
       price_unit: Number(p.sell_price || 0),
-      img: getProductImg(p) || placeholderImg(p.name)
+      img: getProductImg(p) || placeholderImg(p.name),
     });
   }
 
@@ -175,7 +175,10 @@ function addToCart(p) {
 }
 
 /* =========================
-   MODAL Info Farmacéutica (creado desde JS)
+   MODAL Info Farmacéutica (PRO)
+   - Cierra SIEMPRE (botón + click fuera + ESC)
+   - Buscador para consultar cualquier medicamento (aunque no esté en inventario)
+   - “Resumen en español” (recorta y ordena para lectura)
 ========================= */
 function escapeHtml(s) {
   return String(s || "")
@@ -186,39 +189,135 @@ function escapeHtml(s) {
     .replaceAll("'", "&#039;");
 }
 
+function resumenEs(data) {
+  const cut = (s, n = 350) => {
+    s = String(s || "").replace(/\s+/g, " ").trim();
+    if (!s) return "";
+    return s.length > n ? s.slice(0, n) + "…" : s;
+  };
+
+  return {
+    titulo: `${data.brand_name || data.query || ""}${data.generic_name ? ` (${data.generic_name})` : ""}`,
+    ingrediente: String(data.active_ingredient || "").trim(),
+    indicaciones: cut(data.indications, 320),
+    dosis: cut(data.dosage, 280),
+    advertencias: cut(data.warnings, 360),
+    embarazo: cut(data.pregnancy, 240),
+    almacenamiento: cut(data.storage, 240),
+  };
+}
+
 function ensureDrugModal() {
   if (document.getElementById("drugModal")) return;
 
   const wrap = document.createElement("div");
   wrap.id = "drugModal";
-  wrap.style.cssText = "display:none; position:fixed; inset:0; background:rgba(0,0,0,.35); padding:24px; overflow:auto; z-index:9999;";
+  wrap.style.cssText = `
+    display:none;
+    position:fixed;
+    inset:0;
+    background:rgba(0,0,0,.45);
+    padding:18px;
+    overflow:auto;
+    z-index:999999;
+  `;
 
   wrap.innerHTML = `
-    <div class="card" style="max-width:900px; margin:auto;">
-      <div class="row" style="justify-content:space-between; align-items:center;">
-        <h2 style="margin:0;">Información farmacéutica</h2>
-        <button class="secondary" id="btnDrugClose" type="button">Cerrar</button>
+    <div id="drugModalPanel" style="
+      max-width:980px;
+      margin:20px auto;
+      background:#fff;
+      border-radius:16px;
+      box-shadow:0 10px 40px rgba(0,0,0,.18);
+      overflow:hidden;
+    ">
+      <div style="
+        position:sticky; top:0;
+        background:#fff;
+        border-bottom:1px solid #e5e7eb;
+        padding:14px 16px;
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:10px;
+        z-index:2;
+      ">
+        <div style="min-width:0">
+          <div style="font-weight:800; font-size:20px;">Información farmacéutica</div>
+          <div class="small muted" id="drugMeta" style="margin-top:4px;"></div>
+        </div>
+
+        <button id="btnDrugClose" type="button" style="
+          padding:10px 14px;
+          border:1px solid #cbd5e1;
+          background:#fff;
+          border-radius:12px;
+          cursor:pointer;
+          font-weight:700;
+        ">Cerrar ✕</button>
       </div>
 
-      <div class="small muted" id="drugMeta" style="margin-top:6px;"></div>
+      <div style="padding:14px 16px; border-bottom:1px solid #eef2f7; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        <input id="drugSearchInput" placeholder="Ej: paracetamol, ibuprofeno, amoxicilina..."
+          style="flex:1; min-width:240px; padding:12px 12px; border:1px solid #cbd5e1; border-radius:12px; outline:none;" />
+        <button id="btnDrugSearch" type="button" style="
+          padding:12px 14px;
+          border:0;
+          background:#0ea5e9;
+          color:#fff;
+          border-radius:12px;
+          cursor:pointer;
+          font-weight:800;
+        ">Buscar</button>
 
-      <div id="drugBody" style="margin-top:12px;">
-        <div class="small muted">Selecciona un medicamento para ver su información.</div>
+        <label class="small" style="display:flex; align-items:center; gap:8px; user-select:none;">
+          <input id="drugTranslateToggle" type="checkbox" checked />
+          Mostrar resumen en español
+        </label>
+      </div>
+
+      <div id="drugBody" style="padding:14px 16px;">
+        <div class="small muted">Escribe un medicamento y presiona <b>Buscar</b>.</div>
       </div>
     </div>
   `;
 
   document.body.appendChild(wrap);
 
-  document.getElementById("btnDrugClose").onclick = closeDrugModal;
+  // Cerrar por botón
+  document.getElementById("btnDrugClose").onclick = (e) => {
+    e.preventDefault();
+    closeDrugModal();
+  };
+
+  // Cerrar clic fuera del panel (IMPORTANTE: no se rompe el click del botón)
   wrap.addEventListener("click", (e) => {
-    if (e.target === wrap) closeDrugModal(); // click fuera
+    const panel = document.getElementById("drugModalPanel");
+    if (panel && !panel.contains(e.target)) closeDrugModal();
+  });
+
+  // Cerrar con ESC
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeDrugModal();
+  });
+
+  // Buscar por input
+  const doSearch = async () => {
+    const v = (document.getElementById("drugSearchInput").value || "").trim();
+    if (!v) return;
+    await showDrugInfo(v);
+  };
+  document.getElementById("btnDrugSearch").onclick = doSearch;
+  document.getElementById("drugSearchInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doSearch();
   });
 }
 
 function openDrugModal() {
   ensureDrugModal();
-  document.getElementById("drugModal").style.display = "block";
+  const m = document.getElementById("drugModal");
+  m.style.display = "block";
+  m.style.pointerEvents = "auto";
 }
 
 function closeDrugModal() {
@@ -229,6 +328,7 @@ function closeDrugModal() {
 function renderDrugInfo(data) {
   const meta = document.getElementById("drugMeta");
   const body = document.getElementById("drugBody");
+  const tgl = document.getElementById("drugTranslateToggle");
 
   if (!data || !data.found) {
     meta.textContent = "";
@@ -238,46 +338,95 @@ function renderDrugInfo(data) {
 
   meta.textContent = `Fuente: ${data.source} · Búsqueda: ${data.query}`;
 
+  const showEs = !!tgl?.checked;
+  const es = resumenEs(data);
+
   const field = (title, value) => {
-    const v = (value || "").trim();
+    const v = String(value || "").trim();
     if (!v) return "";
     return `
-      <div style="margin:10px 0;">
-        <div class="small muted" style="font-weight:700; margin-bottom:4px;">${escapeHtml(title)}</div>
-        <div style="white-space:pre-wrap; line-height:1.45;">${escapeHtml(v)}</div>
+      <div style="margin:12px 0;">
+        <div class="small muted" style="font-weight:900; margin-bottom:6px;">${escapeHtml(title)}</div>
+        <div style="white-space:pre-wrap; line-height:1.5;">${escapeHtml(v)}</div>
       </div>
     `;
   };
 
-  body.innerHTML = `
+  const chips = `
     <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-      <span class="badge" style="padding:6px 10px;"><b>${escapeHtml(data.brand_name || "")}</b></span>
-      ${data.generic_name ? `<span class="badge" style="padding:6px 10px;">Genérico: <b>${escapeHtml(data.generic_name)}</b></span>` : ""}
-      ${data.active_ingredient ? `<span class="badge" style="padding:6px 10px;">Ingrediente: <b>${escapeHtml(data.active_ingredient)}</b></span>` : ""}
+      <span style="padding:7px 10px; border-radius:999px; background:#eef2ff; font-weight:900;">
+        ${escapeHtml(data.brand_name || data.query || "")}
+      </span>
+      ${data.generic_name ? `<span style="padding:7px 10px; border-radius:999px; background:#ecfeff; font-weight:800;">
+        Genérico: ${escapeHtml(data.generic_name)}
+      </span>` : ""}
+      ${data.active_ingredient ? `<span style="padding:7px 10px; border-radius:999px; background:#f1f5f9; font-weight:800;">
+        Ingrediente: ${escapeHtml(data.active_ingredient)}
+      </span>` : ""}
     </div>
-    <hr/>
-    ${field("Indicaciones / Uso", data.indications)}
-    ${field("Dosis / Administración", data.dosage)}
-    ${field("Advertencias", data.warnings)}
-    ${field("Contraindicaciones", data.contraindications)}
-    ${field("Interacciones", data.interactions)}
-    ${field("Embarazo / Lactancia", data.pregnancy)}
-    ${field("Almacenamiento", data.storage)}
+  `;
+
+  const esBlock = `
+    <div style="margin-top:14px; padding:12px; border:1px solid #e5e7eb; border-radius:14px; background:#f8fafc;">
+      <div style="font-weight:900; margin-bottom:8px;">Resumen en español (automático)</div>
+      ${field("Indicaciones / Uso", es.indicaciones)}
+      ${field("Dosis / Administración", es.dosis)}
+      ${field("Advertencias", es.advertencias)}
+      ${field("Embarazo / Lactancia", es.embarazo)}
+      ${field("Almacenamiento", es.almacenamiento)}
+      <div class="small muted">Nota: OpenFDA suele estar en inglés. Este resumen recorta y ordena la info para lectura rápida.</div>
+    </div>
+  `;
+
+  const originalBlock = `
+    <div style="margin-top:14px;">
+      <details>
+        <summary style="cursor:pointer; font-weight:900;">Ver texto original (OpenFDA - inglés)</summary>
+        <div style="margin-top:10px;">
+          ${field("Indications / Usage", data.indications)}
+          ${field("Dosage / Administration", data.dosage)}
+          ${field("Warnings", data.warnings)}
+          ${field("Contraindications", data.contraindications)}
+          ${field("Interactions", data.interactions)}
+          ${field("Pregnancy / Lactation", data.pregnancy)}
+          ${field("Storage", data.storage)}
+        </div>
+      </details>
+    </div>
+  `;
+
+  body.innerHTML = `
+    ${chips}
+    ${showEs ? esBlock : ""}
+    ${originalBlock}
   `;
 }
 
 async function showDrugInfo(name) {
   try {
     openDrugModal();
+
+    // Rellenar input (si viene desde botón del producto)
+    const inp = document.getElementById("drugSearchInput");
+    if (inp && name) inp.value = name;
+
     document.getElementById("drugMeta").textContent = "Cargando...";
     document.getElementById("drugBody").innerHTML = `<div class="small muted">Buscando información...</div>`;
 
     const data = await api(`/api/drug-info?name=${encodeURIComponent(name)}`);
+
+    // Render inicial
     renderDrugInfo(data);
+
+    // Re-render si cambian el toggle sin volver a consultar
+    const tgl = document.getElementById("drugTranslateToggle");
+    if (tgl && !tgl._bound) {
+      tgl._bound = true;
+      tgl.addEventListener("change", () => renderDrugInfo(data));
+    }
   } catch (e) {
     document.getElementById("drugMeta").textContent = "";
-    document.getElementById("drugBody").innerHTML =
-      `<div class="small" style="color:#ef4444;">Error: ${escapeHtml(e.message || "No se pudo consultar")}</div>`;
+    document.getElementById("drugBody").innerHTML = `<div class="small" style="color:#ef4444;">Error: ${escapeHtml(e.message || "No se pudo consultar")}</div>`;
   }
 }
 
@@ -290,7 +439,7 @@ function renderProducts() {
 
   const q = (qs("search").value || "").trim().toLowerCase();
 
-  const rows = products.filter(p => {
+  const rows = products.filter((p) => {
     if (!q) return true;
     return (p.name || "").toLowerCase().includes(q) || (p.code || "").toLowerCase().includes(q);
   });
@@ -322,7 +471,7 @@ function renderProducts() {
     }
 
     const stCls = stockClass(p.stock);
-    const stText = (Number(p.stock || 0) <= 0) ? "SIN STOCK" : `Stock: ${p.stock}`;
+    const stText = Number(p.stock || 0) <= 0 ? "SIN STOCK" : `Stock: ${p.stock}`;
 
     card.innerHTML = `
       <div class="p-img">
@@ -366,7 +515,7 @@ function renderProducts() {
     };
 
     const infoBtn = card.querySelector('button[data-act="info"]');
-    const addBtn  = card.querySelector('button[data-act="add"]');
+    const addBtn = card.querySelector('button[data-act="add"]');
 
     infoBtn.onclick = (e) => {
       e.stopPropagation();
@@ -400,8 +549,7 @@ async function loadProducts() {
    Ticket
 ========================= */
 function buildTicket(sale, items) {
-  qs("ticketMeta").textContent =
-    `Venta #${sale.id} · ${sale.date.replace("T", " ").slice(0,16)} · Pago: ${sale.payment_method}`;
+  qs("ticketMeta").textContent = `Venta #${sale.id} · ${sale.date.replace("T", " ").slice(0, 16)} · Pago: ${sale.payment_method}`;
 
   const box = qs("ticketItems");
   box.innerHTML = "";
@@ -431,7 +579,7 @@ async function sell() {
     }
 
     for (const it of cart) {
-      const p = products.find(x => x.id === it.product_id);
+      const p = products.find((x) => x.id === it.product_id);
       if (!p) continue;
       if (p.stock < it.qty) {
         setMsg(`Stock insuficiente: ${p.name}`, true);
@@ -447,7 +595,7 @@ async function sell() {
 
     const r = await api("/api/sales", {
       method: "POST",
-      body: JSON.stringify({ items: cart, payment_method })
+      body: JSON.stringify({ items: cart, payment_method }),
     });
 
     buildTicket(r.sale, r.items);
