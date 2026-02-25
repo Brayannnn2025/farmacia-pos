@@ -178,7 +178,7 @@ function addToCart(p) {
    MODAL Info Farmacéutica (PRO)
    - Cierra SIEMPRE (botón + click fuera + ESC)
    - Buscador para consultar cualquier medicamento (aunque no esté en inventario)
-   - “Resumen en español” (recorta y ordena para lectura)
+   - “Resumen en español” (toggle pide lang=es al backend)
 ========================= */
 function escapeHtml(s) {
   return String(s || "")
@@ -197,7 +197,9 @@ function resumenEs(data) {
   };
 
   return {
-    titulo: `${data.brand_name || data.query || ""}${data.generic_name ? ` (${data.generic_name})` : ""}`,
+    titulo: `${data.brand_name || data.query || ""}${
+      data.generic_name ? ` (${data.generic_name})` : ""
+    }`,
     ingrediente: String(data.active_ingredient || "").trim(),
     indicaciones: cut(data.indications, 320),
     dosis: cut(data.dosage, 280),
@@ -207,7 +209,17 @@ function resumenEs(data) {
   };
 }
 
+// ✅ Si existe un modal viejo en el HTML, lo eliminamos para usar el PRO
+function removeLegacyDrugModalIfAny() {
+  const legacy = document.getElementById("drugModal");
+  // Si existe pero NO tiene el panel PRO, lo consideramos legacy y lo borramos
+  if (legacy && !document.getElementById("drugModalPanel")) {
+    legacy.remove();
+  }
+}
+
 function ensureDrugModal() {
+  removeLegacyDrugModalIfAny();
   if (document.getElementById("drugModal")) return;
 
   const wrap = document.createElement("div");
@@ -290,7 +302,7 @@ function ensureDrugModal() {
     closeDrugModal();
   };
 
-  // Cerrar clic fuera del panel (IMPORTANTE: no se rompe el click del botón)
+  // Cerrar clic fuera del panel
   wrap.addEventListener("click", (e) => {
     const panel = document.getElementById("drugModalPanel");
     if (panel && !panel.contains(e.target)) closeDrugModal();
@@ -307,6 +319,7 @@ function ensureDrugModal() {
     if (!v) return;
     await showDrugInfo(v);
   };
+
   document.getElementById("btnDrugSearch").onclick = doSearch;
   document.getElementById("drugSearchInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter") doSearch();
@@ -332,11 +345,16 @@ function renderDrugInfo(data) {
 
   if (!data || !data.found) {
     meta.textContent = "";
-    body.innerHTML = `<div class="small">No se encontró información para: <b>${escapeHtml(data?.query || "")}</b></div>`;
+    body.innerHTML = `<div class="small">No se encontró información para: <b>${escapeHtml(
+      data?.query || ""
+    )}</b></div>`;
     return;
   }
 
-  meta.textContent = `Fuente: ${data.source} · Búsqueda: ${data.query}`;
+  // ✅ muestra si vino traducido por AWS Translate
+  meta.textContent = `Fuente: ${data.source} · Búsqueda: ${data.query}${
+    data.translated_by ? ` · Traducido: ${data.translated_by}` : ""
+  }`;
 
   const showEs = !!tgl?.checked;
   const es = resumenEs(data);
@@ -346,7 +364,9 @@ function renderDrugInfo(data) {
     if (!v) return "";
     return `
       <div style="margin:12px 0;">
-        <div class="small muted" style="font-weight:900; margin-bottom:6px;">${escapeHtml(title)}</div>
+        <div class="small muted" style="font-weight:900; margin-bottom:6px;">${escapeHtml(
+          title
+        )}</div>
         <div style="white-space:pre-wrap; line-height:1.5;">${escapeHtml(v)}</div>
       </div>
     `;
@@ -357,12 +377,20 @@ function renderDrugInfo(data) {
       <span style="padding:7px 10px; border-radius:999px; background:#eef2ff; font-weight:900;">
         ${escapeHtml(data.brand_name || data.query || "")}
       </span>
-      ${data.generic_name ? `<span style="padding:7px 10px; border-radius:999px; background:#ecfeff; font-weight:800;">
+      ${
+        data.generic_name
+          ? `<span style="padding:7px 10px; border-radius:999px; background:#ecfeff; font-weight:800;">
         Genérico: ${escapeHtml(data.generic_name)}
-      </span>` : ""}
-      ${data.active_ingredient ? `<span style="padding:7px 10px; border-radius:999px; background:#f1f5f9; font-weight:800;">
+      </span>`
+          : ""
+      }
+      ${
+        data.active_ingredient
+          ? `<span style="padding:7px 10px; border-radius:999px; background:#f1f5f9; font-weight:800;">
         Ingrediente: ${escapeHtml(data.active_ingredient)}
-      </span>` : ""}
+      </span>`
+          : ""
+      }
     </div>
   `;
 
@@ -374,14 +402,14 @@ function renderDrugInfo(data) {
       ${field("Advertencias", es.advertencias)}
       ${field("Embarazo / Lactancia", es.embarazo)}
       ${field("Almacenamiento", es.almacenamiento)}
-      <div class="small muted">Nota: OpenFDA suele estar en inglés. Este resumen recorta y ordena la info para lectura rápida.</div>
+      <div class="small muted">Nota: el texto puede venir traducido por AWS Translate si activas el resumen.</div>
     </div>
   `;
 
   const originalBlock = `
     <div style="margin-top:14px;">
       <details>
-        <summary style="cursor:pointer; font-weight:900;">Ver texto original (OpenFDA - inglés)</summary>
+        <summary style="cursor:pointer; font-weight:900;">Ver texto (OpenFDA)</summary>
         <div style="margin-top:10px;">
           ${field("Indications / Usage", data.indications)}
           ${field("Dosage / Administration", data.dosage)}
@@ -402,6 +430,7 @@ function renderDrugInfo(data) {
   `;
 }
 
+// ✅ ACTUALIZADO: pide lang=es o lang=en al backend según toggle
 async function showDrugInfo(name) {
   try {
     openDrugModal();
@@ -410,23 +439,46 @@ async function showDrugInfo(name) {
     const inp = document.getElementById("drugSearchInput");
     if (inp && name) inp.value = name;
 
-    document.getElementById("drugMeta").textContent = "Cargando...";
-    document.getElementById("drugBody").innerHTML = `<div class="small muted">Buscando información...</div>`;
+    const metaEl = document.getElementById("drugMeta");
+    const bodyEl = document.getElementById("drugBody");
 
-    const data = await api(`/api/drug-info?name=${encodeURIComponent(name)}`);
+    metaEl.textContent = "Cargando...";
+    bodyEl.innerHTML = `<div class="small muted">Buscando información...</div>`;
 
-    // Render inicial
+    const tgl = document.getElementById("drugTranslateToggle");
+    const wantEs = !!tgl?.checked;
+
+    const lang = wantEs ? "es" : "en";
+    const url = `/api/drug-info?name=${encodeURIComponent(name)}&lang=${encodeURIComponent(lang)}`;
+
+    const data = await api(url);
     renderDrugInfo(data);
 
-    // Re-render si cambian el toggle sin volver a consultar
-    const tgl = document.getElementById("drugTranslateToggle");
+    // ✅ si cambian toggle: volver a consultar
     if (tgl && !tgl._bound) {
       tgl._bound = true;
-      tgl.addEventListener("change", () => renderDrugInfo(data));
+      tgl.addEventListener("change", async () => {
+        const currentName = (document.getElementById("drugSearchInput")?.value || "").trim();
+        if (!currentName) return;
+
+        metaEl.textContent = "Cargando...";
+        bodyEl.innerHTML = `<div class="small muted">Actualizando...</div>`;
+
+        const wantEs2 = !!tgl.checked;
+        const lang2 = wantEs2 ? "es" : "en";
+        const url2 = `/api/drug-info?name=${encodeURIComponent(
+          currentName
+        )}&lang=${encodeURIComponent(lang2)}`;
+
+        const data2 = await api(url2);
+        renderDrugInfo(data2);
+      });
     }
   } catch (e) {
     document.getElementById("drugMeta").textContent = "";
-    document.getElementById("drugBody").innerHTML = `<div class="small" style="color:#ef4444;">Error: ${escapeHtml(e.message || "No se pudo consultar")}</div>`;
+    document.getElementById("drugBody").innerHTML = `<div class="small" style="color:#ef4444;">Error: ${escapeHtml(
+      e.message || "No se pudo consultar"
+    )}</div>`;
   }
 }
 
