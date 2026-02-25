@@ -98,7 +98,7 @@ function renderCart() {
 
   for (const it of cart) {
     const div = document.createElement("div");
-    div.className = "item"; // (si tu CSS no tiene .item, igual no rompe)
+    div.className = "item";
 
     const img = it.img || placeholderImg(it.name);
 
@@ -145,13 +145,11 @@ function renderCart() {
    Agregar al carrito
 ========================= */
 function addToCart(p) {
-  // Bloquear si vencido
   if (p.expiry_date && isExpired(p.expiry_date)) {
     setMsg(`❌ Producto vencido: ${p.name} (${p.expiry_date}). No se puede vender.`, true);
     return;
   }
 
-  // Aviso si vence pronto
   if (p.expiry_date && isExpiringSoon(p.expiry_date, 30)) {
     const d = daysTo(p.expiry_date);
     setMsg(`⚠️ OJO: "${p.name}" vence en ${d} días (${p.expiry_date}).`, true);
@@ -177,6 +175,113 @@ function addToCart(p) {
 }
 
 /* =========================
+   MODAL Info Farmacéutica (creado desde JS)
+========================= */
+function escapeHtml(s) {
+  return String(s || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function ensureDrugModal() {
+  if (document.getElementById("drugModal")) return;
+
+  const wrap = document.createElement("div");
+  wrap.id = "drugModal";
+  wrap.style.cssText = "display:none; position:fixed; inset:0; background:rgba(0,0,0,.35); padding:24px; overflow:auto; z-index:9999;";
+
+  wrap.innerHTML = `
+    <div class="card" style="max-width:900px; margin:auto;">
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <h2 style="margin:0;">Información farmacéutica</h2>
+        <button class="secondary" id="btnDrugClose" type="button">Cerrar</button>
+      </div>
+
+      <div class="small muted" id="drugMeta" style="margin-top:6px;"></div>
+
+      <div id="drugBody" style="margin-top:12px;">
+        <div class="small muted">Selecciona un medicamento para ver su información.</div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(wrap);
+
+  document.getElementById("btnDrugClose").onclick = closeDrugModal;
+  wrap.addEventListener("click", (e) => {
+    if (e.target === wrap) closeDrugModal(); // click fuera
+  });
+}
+
+function openDrugModal() {
+  ensureDrugModal();
+  document.getElementById("drugModal").style.display = "block";
+}
+
+function closeDrugModal() {
+  const m = document.getElementById("drugModal");
+  if (m) m.style.display = "none";
+}
+
+function renderDrugInfo(data) {
+  const meta = document.getElementById("drugMeta");
+  const body = document.getElementById("drugBody");
+
+  if (!data || !data.found) {
+    meta.textContent = "";
+    body.innerHTML = `<div class="small">No se encontró información para: <b>${escapeHtml(data?.query || "")}</b></div>`;
+    return;
+  }
+
+  meta.textContent = `Fuente: ${data.source} · Búsqueda: ${data.query}`;
+
+  const field = (title, value) => {
+    const v = (value || "").trim();
+    if (!v) return "";
+    return `
+      <div style="margin:10px 0;">
+        <div class="small muted" style="font-weight:700; margin-bottom:4px;">${escapeHtml(title)}</div>
+        <div style="white-space:pre-wrap; line-height:1.45;">${escapeHtml(v)}</div>
+      </div>
+    `;
+  };
+
+  body.innerHTML = `
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <span class="badge" style="padding:6px 10px;"><b>${escapeHtml(data.brand_name || "")}</b></span>
+      ${data.generic_name ? `<span class="badge" style="padding:6px 10px;">Genérico: <b>${escapeHtml(data.generic_name)}</b></span>` : ""}
+      ${data.active_ingredient ? `<span class="badge" style="padding:6px 10px;">Ingrediente: <b>${escapeHtml(data.active_ingredient)}</b></span>` : ""}
+    </div>
+    <hr/>
+    ${field("Indicaciones / Uso", data.indications)}
+    ${field("Dosis / Administración", data.dosage)}
+    ${field("Advertencias", data.warnings)}
+    ${field("Contraindicaciones", data.contraindications)}
+    ${field("Interacciones", data.interactions)}
+    ${field("Embarazo / Lactancia", data.pregnancy)}
+    ${field("Almacenamiento", data.storage)}
+  `;
+}
+
+async function showDrugInfo(name) {
+  try {
+    openDrugModal();
+    document.getElementById("drugMeta").textContent = "Cargando...";
+    document.getElementById("drugBody").innerHTML = `<div class="small muted">Buscando información...</div>`;
+
+    const data = await api(`/api/drug-info?name=${encodeURIComponent(name)}`);
+    renderDrugInfo(data);
+  } catch (e) {
+    document.getElementById("drugMeta").textContent = "";
+    document.getElementById("drugBody").innerHTML =
+      `<div class="small" style="color:#ef4444;">Error: ${escapeHtml(e.message || "No se pudo consultar")}</div>`;
+  }
+}
+
+/* =========================
    Render productos (CARDS)
 ========================= */
 function renderProducts() {
@@ -198,7 +303,6 @@ function renderProducts() {
   for (const p of rows) {
     const d = daysTo(p.expiry_date);
 
-    // Badge vencimiento
     let venceBadge = "";
     if (d !== null) {
       if (d < 0) venceBadge = `<span class="badge" style="background:#ef4444;color:white;">VENCIDO</span>`;
@@ -209,9 +313,8 @@ function renderProducts() {
     const img = getProductImg(p) || placeholderImg(p.name);
 
     const card = document.createElement("div");
-    card.className = "p-card"; // coincide con el CSS del pos.html nuevo
+    card.className = "p-card";
 
-    // Fondo si vencido / por vencer
     let ribbon = "";
     if (d !== null) {
       if (d < 0) ribbon = `<span class="badge" style="background:#ef4444;color:white;">VENCIDO</span>`;
@@ -246,13 +349,12 @@ function renderProducts() {
         <span class="p-stock ${stCls}">${stText}</span>
 
         <div style="margin-top:8px; display:flex; gap:10px; justify-content:flex-end">
-          <button class="secondary" type="button">Agregar</button>
+          <button class="secondary" data-act="info" type="button">📚 Info</button>
+          <button class="secondary" data-act="add" type="button">Agregar</button>
         </div>
       </div>
     `;
 
-    // Si está sin stock, igual se puede mostrar pero no agregar (pro)
-    const addBtn = card.querySelector("button");
     const stock = Number(p.stock || 0);
 
     const addAction = () => {
@@ -263,17 +365,24 @@ function renderProducts() {
       addToCart(p);
     };
 
-    // Click en card o en botón agrega
-    card.addEventListener("click", (e) => {
-      // Si clic fue en el botón, igual se maneja
-      if (e.target && e.target.tagName === "BUTTON") return;
-      addAction();
-    });
+    const infoBtn = card.querySelector('button[data-act="info"]');
+    const addBtn  = card.querySelector('button[data-act="add"]');
+
+    infoBtn.onclick = (e) => {
+      e.stopPropagation();
+      showDrugInfo(p.name || p.code || "");
+    };
 
     addBtn.onclick = (e) => {
       e.stopPropagation();
       addAction();
     };
+
+    // Click en card agrega (pero no si clic fue en botón)
+    card.addEventListener("click", (e) => {
+      if (e.target && e.target.tagName === "BUTTON") return;
+      addAction();
+    });
 
     root.appendChild(card);
   }
@@ -321,7 +430,6 @@ async function sell() {
       return;
     }
 
-    // Validar stock local (rápido)
     for (const it of cart) {
       const p = products.find(x => x.id === it.product_id);
       if (!p) continue;
@@ -342,7 +450,6 @@ async function sell() {
       body: JSON.stringify({ items: cart, payment_method })
     });
 
-    // Imprimir
     buildTicket(r.sale, r.items);
 
     const w = window.open("", "_blank");
@@ -351,7 +458,6 @@ async function sell() {
     w.focus();
     w.print();
 
-    // Limpiar y recargar
     cart = [];
     renderCart();
     setMsg("✅ Venta registrada correctamente.", false);
