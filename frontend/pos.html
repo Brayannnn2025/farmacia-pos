@@ -4,6 +4,12 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Caja | POS Farmacia</title>
+
+  <!-- Ayuda a evitar cache agresivo (no siempre lo respeta el navegador, pero suma) -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+
   <link rel="stylesheet" href="styles.css"/>
 
   <style>
@@ -29,6 +35,22 @@
     }
     .drugbar input{ flex:1 1 260px; }
     .drugbar .hint{ font-size:12px; color:#64748b; }
+    .drugbar .controls{
+      display:flex;
+      gap:10px;
+      align-items:center;
+      flex-wrap:wrap;
+    }
+    .chk{
+      display:flex;
+      gap:8px;
+      align-items:center;
+      font-size:12px;
+      color:#334155;
+      user-select:none;
+      white-space:nowrap;
+    }
+    .chk input{ transform: translateY(1px); }
 
     /* Catálogo con cards */
     .catalog{
@@ -134,15 +156,31 @@
 
     <div class="searchbar">
       <input id="search" placeholder="Buscar por nombre o código..." />
-      <button class="secondary" id="btnReload">Recargar</button>
+      <button class="secondary" id="btnReload" type="button">Recargar</button>
     </div>
 
     <p class="small">Haz clic en un producto para agregarlo al carrito.</p>
 
-    <!-- ✅ NUEVO: buscador visible de info farmacéutica -->
+    <!-- ✅ Buscador visible de info farmacéutica -->
     <div class="drugbar">
-      <input id="drugSearchTop" placeholder="Info farmacéutica: ej. paracetamol, amoxicilina, ibuprofeno..." />
-      <button id="btnDrugSearchTop" type="button" class="secondary">Buscar info</button>
+      <input id="drugSearchTop" placeholder="Info farmacéutica: ej. panadol, paracetamol, amoxicilina..." />
+
+      <div class="controls">
+        <button id="btnDrugSearchTop" type="button" class="secondary">Buscar info</button>
+
+        <!-- ✅ Idioma de salida -->
+        <select id="drugLangTop" title="Idioma">
+          <option value="es" selected>ES</option>
+          <option value="en">EN</option>
+        </select>
+
+        <!-- ✅ Resumen en español con LibreTranslate (si lang=es) -->
+        <label class="chk" title="Traduce campos largos a español usando LibreTranslate (si está disponible)">
+          <input id="drugResumenEsTop" type="checkbox" checked />
+          Mostrar resumen en español
+        </label>
+      </div>
+
       <div class="hint">Se abre un panel con información (si existe en OpenFDA).</div>
     </div>
 
@@ -165,8 +203,8 @@
     </div>
 
     <div class="row" style="margin-top:10px;">
-      <button id="btnSell">Vender + Ticket</button>
-      <button class="secondary" id="btnClear">Vaciar</button>
+      <button id="btnSell" type="button">Vender + Ticket</button>
+      <button class="secondary" id="btnClear" type="button">Vaciar</button>
     </div>
 
     <p id="msg" class="small" style="color:#ef4444"></p>
@@ -188,11 +226,17 @@
 <script>
   requireAuth(["admin","cajero"]);
   applyRoleVisibility();
+
+  // 🔥 Evita que el botón de “Buscar info” haga submit por si en algún momento cae dentro de un form
+  document.addEventListener("click", (e) => {
+    const btn = e.target && (e.target.closest ? e.target.closest("#btnDrugSearchTop") : null);
+    if (btn) e.preventDefault();
+  });
 </script>
 
-<!-- ✅ IMPORTANTE: ya NO ponemos <div id="drugModal">...</div> aquí.
-     El modal PRO lo crea pos.js (ensureDrugModal). -->
+<!-- ✅ IMPORTANTE: el modal PRO lo crea pos.js (ensureDrugModal) -->
+<!-- ✅ Cache-buster para asegurar que cargue el pos.js nuevo -->
+<script src="pos.js?v=20260226_1"></script>
 
-<script src="pos.js"></script>
 </body>
 </html>
