@@ -44,6 +44,14 @@ const translateClient = new TranslateClient({ region: AWS_REGION });
 function cleanText(s) {
   return String(s || "").replace(/\s+/g, " ").trim();
 }
+function stripAccents(s) {
+  return String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+function normQuery(s) {
+  return cleanText(stripAccents(String(s || "")).toLowerCase());
+}
 
 // Traducción genérica segura (fallback a original)
 async function translateSafe(text, sourceLang, targetLang) {
@@ -61,10 +69,12 @@ async function translateSafe(text, sourceLang, targetLang) {
       TargetLanguageCode: targetLang,
     });
     const out = await translateClient.send(cmd);
-    return cleanText(out?.TranslatedText || input);
+    const translated = cleanText(out?.TranslatedText || "");
+    // Si devuelve vacío, devolvemos original
+    return translated || input;
   } catch (e) {
     console.error("❌ AWS Translate error:", e?.name || e, e?.message || "");
-    return input;
+    return input; // fallback: original
   }
 }
 
@@ -86,7 +96,6 @@ function run(sql, params = []) {
     });
   });
 }
-
 function get(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.get(sql, params, (err, row) => {
@@ -95,7 +104,6 @@ function get(sql, params = []) {
     });
   });
 }
-
 function all(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => {
@@ -121,7 +129,6 @@ function auth(req, res, next) {
     return res.status(401).json({ error: "Token inválido" });
   }
 }
-
 function requireRole(...roles) {
   return (req, res, next) => {
     const r = req.user?.role;
@@ -208,8 +215,8 @@ async function init() {
   await ensureColumn("products", "location", "TEXT DEFAULT ''");
 
   // Crear admin por defecto si no existe
-  const admin = await get(`SELECT * FROM users WHERE username=?`, ["admin"]);
-  if (!admin) {
+  const adminUser = await get(`SELECT * FROM users WHERE username=?`, ["admin"]);
+  if (!adminUser) {
     const hash = bcrypt.hashSync("admin123", 10);
     await run(`INSERT INTO users(username, password_hash, role) VALUES(?,?,?)`, [
       "admin",
@@ -288,7 +295,9 @@ app.post("/api/users", auth, requireRole("admin"), async (req, res) => {
 app.delete("/api/users/:id", auth, requireRole("admin"), async (req, res) => {
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ error: "ID inválido" });
-  if (req.user.id === id) return res.status(400).json({ error: "No puedes eliminar tu propio usuario" });
+  if (req.user.id === id) {
+    return res.status(400).json({ error: "No puedes eliminar tu propio usuario" });
+  }
 
   const user = await get(`SELECT id, username, role FROM users WHERE id=?`, [id]);
   if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
@@ -588,61 +597,169 @@ app.get("/api/dashboard/summary", auth, requireRole("admin", "cajero"), async (r
 
 // ===============================
 // INFORMACIÓN FARMACÉUTICA (OpenFDA) + AWS Translate
-// Visible para admin y cajero
-// GET /api/drug-info?name=amoxicilina&lang=es
+// ✅ MEJORAS:
+// - Busca con varias estrategias (brand/generic/substance) y sin comillas
+// - Normaliza acentos (amoxicilín → amoxicilin) para que encuentre más
+// - Si lang=es y no encuentra, traduce ES->EN y reintenta
+// - Si lang=en, NO traduce (sale en inglés)
+// - Cache simple (evita golpear OpenFDA/Translate por lo mismo)
+// GET /api/drug-info?name=ibuprofeno&lang=es|en
 // ===============================
+const DRUG_CACHE = new Map(); // key -> { expires, value }
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+
+function cacheGet(key) {
+  const hit = DRUG_CACHE.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.expires) {
+    DRUG_CACHE.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+function cacheSet(key, value) {
+  DRUG_CACHE.set(key, { expires: Date.now() + CACHE_TTL_MS, value });
+}
+
 app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res) => {
   try {
-    const name = String(req.query.name || "").trim();
-    const lang = String(req.query.lang || "es").trim().toLowerCase(); // ✅ &lang=es
+    const rawName = String(req.query.name || "").trim();
+    const lang = String(req.query.lang || "es").trim().toLowerCase(); // "es" o "en"
 
-    if (!name) return res.status(400).json({ error: "Falta name" });
+    if (!rawName) return res.status(400).json({ error: "Falta name" });
+
+    const safeLang = lang === "en" ? "en" : "es"; // default es
+    const key = `${safeLang}:${normQuery(rawName)}`;
+    const cached = cacheGet(key);
+    if (cached) return res.json(cached);
 
     const pick = (x) => (Array.isArray(x) ? (x[0] || "") : (x || ""));
 
-    // Helper: buscar en OpenFDA
-    async function searchOpenFDA(term) {
-      const q = encodeURIComponent(`openfda.brand_name:"${term}" OR openfda.generic_name:"${term}"`);
-      const url = `https://api.fda.gov/drug/label.json?search=${q}&limit=1`;
+    async function openFdaFetch(search) {
+      const url = `https://api.fda.gov/drug/label.json?search=${encodeURIComponent(search)}&limit=1`;
       const r = await fetchFn(url);
-      const data = await r.json();
-      if (!data.results || data.results.length === 0) return null;
+
+      // OpenFDA a veces devuelve 404/429 con JSON de error
+      if (!r.ok) {
+        let msg = `${r.status}`;
+        try {
+          const j = await r.json();
+          msg = j?.error?.message || msg;
+        } catch {}
+        // No rompemos todo: solo consideramos "no encontrado" en esta estrategia
+        console.warn("OpenFDA not ok:", msg);
+        return null;
+      }
+
+      const data = await r.json().catch(() => null);
+      if (!data?.results?.length) return null;
       return data.results[0];
     }
 
-    // 1) Intento: tal cual
-    let d = await searchOpenFDA(name);
-    let searched_term = name;
-    let query_translated_from = null;
+    async function searchOpenFDA(term) {
+      const t = cleanText(term);
+      if (!t) return null;
 
-    // 2) Fallback: si no encuentra y lang=es => traducir query ES->EN y reintentar
-    if (!d && lang === "es") {
-      const enTerm = await translateEsToEn(name);
-      if (enTerm && enTerm.toLowerCase() !== name.toLowerCase()) {
-        d = await searchOpenFDA(enTerm);
-        searched_term = enTerm;
-        query_translated_from = name;
+      // Estrategias (de más exacta a más flexible)
+      const queries = [
+        // Exacto por brand/generic
+        `openfda.brand_name:"${t}" OR openfda.generic_name:"${t}"`,
+        // Flexible sin comillas (tokeniza)
+        `openfda.brand_name:${t} OR openfda.generic_name:${t}`,
+        // Por sustancia (cuando la marca no coincide)
+        `openfda.substance_name:"${t}" OR openfda.substance_name:${t}`,
+        // Algunos labels tienen active_ingredient como campo (no openfda.*)
+        `active_ingredient:"${t}" OR active_ingredient:${t}`,
+      ];
+
+      // Si tiene varias palabras, probamos también la primera (a veces funciona mejor)
+      const first = t.split(/\s+/)[0];
+      if (first && first !== t) {
+        queries.push(
+          `openfda.brand_name:"${first}" OR openfda.generic_name:"${first}"`,
+          `openfda.brand_name:${first} OR openfda.generic_name:${first}`
+        );
+      }
+
+      for (const q of queries) {
+        const d = await openFdaFetch(q);
+        if (d) return { d, usedQuery: q };
+      }
+      return null;
+    }
+
+    // 1) Intento con el término tal cual + normalizado sin acentos
+    const nameNoAccents = stripAccents(rawName);
+    const tried = [];
+    let foundPack = null;
+    let searched_term = rawName;
+    let query_translated_from = null;
+    let search_used = null;
+
+    // intento 1
+    tried.push(rawName);
+    foundPack = await searchOpenFDA(rawName);
+
+    // intento 1.1 (sin acentos)
+    if (!foundPack && nameNoAccents && nameNoAccents !== rawName) {
+      tried.push(nameNoAccents);
+      foundPack = await searchOpenFDA(nameNoAccents);
+      if (foundPack) searched_term = nameNoAccents;
+    }
+
+    // 2) Si piden ES y no encontró, traducimos query ES->EN y reintentamos
+    if (!foundPack && safeLang === "es") {
+      const enTerm = await translateEsToEn(rawName);
+      const enNoAccents = stripAccents(enTerm);
+
+      if (enTerm && enTerm.toLowerCase() !== rawName.toLowerCase()) {
+        tried.push(enTerm);
+        foundPack = await searchOpenFDA(enTerm);
+        if (foundPack) {
+          searched_term = enTerm;
+          query_translated_from = rawName;
+        }
+      }
+
+      if (!foundPack && enNoAccents && enNoAccents !== enTerm) {
+        tried.push(enNoAccents);
+        foundPack = await searchOpenFDA(enNoAccents);
+        if (foundPack) {
+          searched_term = enNoAccents;
+          query_translated_from = rawName;
+        }
       }
     }
 
-    if (!d) {
-      return res.json({
+    if (!foundPack) {
+      const outNF = {
         found: false,
-        query: name,
-        tried: lang === "es" ? [name, searched_term].filter(Boolean) : [name],
+        query: rawName,
+        searched_term: rawName,
+        query_translated_from: null,
+        tried,
         source: "openfda",
-      });
+        lang: safeLang,
+      };
+      cacheSet(key, outNF);
+      return res.json(outNF);
     }
+
+    const d = foundPack.d;
+    search_used = foundPack.usedQuery;
 
     // Base (normalmente viene en inglés)
     const out = {
       found: true,
-      query: name,
-      searched_term,                // término real usado para consultar OpenFDA
-      query_translated_from,        // si existió fallback ES->EN
-      brand_name: pick(d.openfda?.brand_name) || name,
+      query: rawName,
+      searched_term, // término final (posible traducción / sin acentos)
+      query_translated_from, // si existió fallback ES->EN
+      search_used, // para debug (lo puedes ocultar luego si quieres)
+      brand_name: pick(d.openfda?.brand_name) || rawName,
       generic_name: pick(d.openfda?.generic_name) || "",
-      active_ingredient: cleanText(pick(d.active_ingredient) || pick(d.openfda?.substance_name) || ""),
+      active_ingredient: cleanText(
+        pick(d.active_ingredient) || pick(d.openfda?.substance_name) || ""
+      ),
       indications: cleanText(pick(d.indications_and_usage) || ""),
       dosage: cleanText(pick(d.dosage_and_administration) || ""),
       warnings: cleanText(pick(d.warnings) || pick(d.boxed_warning) || ""),
@@ -651,12 +768,15 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
       pregnancy: cleanText(pick(d.pregnancy) || pick(d.pregnancy_or_breast_feeding) || ""),
       storage: cleanText(pick(d.storage_and_handling) || ""),
       source: "openfda",
-      lang,
+      lang: safeLang,
       translated_by: null,
+      translation_ok: null,
+      tried,
     };
 
-    // 3) Si piden español, traducimos campos “largos”
-    if (lang === "es") {
+    // 3) Si piden ES, traducimos campos “largos”.
+    //    OJO: si AWS Translate falla, devolvemos EN (original) y marcamos translation_ok=false
+    if (safeLang === "es") {
       const fieldsToTranslate = [
         "indications",
         "dosage",
@@ -667,15 +787,25 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
         "storage",
       ];
 
-      const translated = await Promise.all(
-        fieldsToTranslate.map(async (k) => [k, await translateToEs(out[k], "en")])
-      );
-
-      for (const [k, v] of translated) out[k] = v;
+      let okAll = true;
+      for (const k of fieldsToTranslate) {
+        const original = out[k];
+        if (!original) continue;
+        const tr = await translateToEs(original, "en");
+        out[k] = tr;
+        // Si por algún motivo el “traducido” sale igual que el original (muy común cuando falla creds),
+        // marcamos como “no ok” para que lo puedas mostrar/depurar en el frontend.
+        if (cleanText(tr) === cleanText(original)) okAll = false;
+      }
 
       out.translated_by = "aws-translate";
+      out.translation_ok = okAll;
+    } else {
+      // lang=en => jamás traducimos
+      out.translation_ok = null;
     }
 
+    cacheSet(key, out);
     res.json(out);
   } catch (e) {
     console.error(e);
