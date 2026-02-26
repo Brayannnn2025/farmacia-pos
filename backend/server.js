@@ -7,9 +7,6 @@ const jwt = require("jsonwebtoken");
 const path = require("path");
 const ExcelJS = require("exceljs");
 
-// ✅ AWS Translate (SDK v3)
-const { TranslateClient, TranslateTextCommand } = require("@aws-sdk/client-translate");
-
 const app = express();
 
 // =========================
@@ -21,7 +18,6 @@ app.use(express.json());
 const DB_PATH = path.join(__dirname, "db.sqlite");
 const db = new sqlite3.Database(DB_PATH);
 
-// ✅ En producción real va en .env
 const JWT_SECRET = process.env.JWT_SECRET || "cambia_esto_por_algo_mas_largo_y_secreto";
 
 // ✅ SERVIR FRONTEND
@@ -36,10 +32,14 @@ const fetchFn = global.fetch
   : (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 // =========================
-// AWS TRANSLATE
+// LIBRETRANSLATE (sin AWS)
 // =========================
-const AWS_REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
-const translateClient = new TranslateClient({ region: AWS_REGION });
+// Puedes setear en .env o PM2:
+//   LIBRETRANSLATE_URL=https://libretranslate.com/translate
+//   LIBRETRANSLATE_API_KEY=xxxxx (opcional)
+const LIBRETRANSLATE_URL =
+  process.env.LIBRETRANSLATE_URL || "https://libretranslate.com/translate";
+const LIBRETRANSLATE_API_KEY = process.env.LIBRETRANSLATE_API_KEY || "";
 
 function cleanText(s) {
   return String(s || "").replace(/\s+/g, " ").trim();
@@ -58,23 +58,36 @@ async function translateSafe(text, sourceLang, targetLang) {
   const t = cleanText(text);
   if (!t) return "";
 
-  // AWS Translate límite: por seguridad recortamos
   const MAX_CHARS = 4500;
   const input = t.length > MAX_CHARS ? t.slice(0, MAX_CHARS) : t;
 
   try {
-    const cmd = new TranslateTextCommand({
-      Text: input,
-      SourceLanguageCode: sourceLang,
-      TargetLanguageCode: targetLang,
+    const body = {
+      q: input,
+      source: sourceLang,
+      target: targetLang,
+      format: "text",
+    };
+    if (LIBRETRANSLATE_API_KEY) body.api_key = LIBRETRANSLATE_API_KEY;
+
+    const r = await fetchFn(LIBRETRANSLATE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
-    const out = await translateClient.send(cmd);
-    const translated = cleanText(out?.TranslatedText || "");
-    // Si devuelve vacío, devolvemos original
+
+    if (!r.ok) {
+      const txt = await r.text().catch(() => "");
+      console.error("❌ LibreTranslate error:", r.status, txt.slice(0, 200));
+      return input;
+    }
+
+    const out = await r.json().catch(() => null);
+    const translated = cleanText(out?.translatedText || "");
     return translated || input;
   } catch (e) {
-    console.error("❌ AWS Translate error:", e?.name || e, e?.message || "");
-    return input; // fallback: original
+    console.error("❌ LibreTranslate exception:", e?.message || e);
+    return input;
   }
 }
 
@@ -123,7 +136,7 @@ function auth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    req.user = payload; // {id, username, role}
+    req.user = payload;
     next();
   } catch {
     return res.status(401).json({ error: "Token inválido" });
@@ -211,10 +224,8 @@ async function init() {
     )
   `);
 
-  // Migraciones
   await ensureColumn("products", "location", "TEXT DEFAULT ''");
 
-  // Crear admin por defecto si no existe
   const adminUser = await get(`SELECT * FROM users WHERE username=?`, ["admin"]);
   if (!adminUser) {
     const hash = bcrypt.hashSync("admin123", 10);
@@ -596,17 +607,11 @@ app.get("/api/dashboard/summary", auth, requireRole("admin", "cajero"), async (r
 });
 
 // ===============================
-// INFORMACIÓN FARMACÉUTICA (OpenFDA) + AWS Translate
-// ✅ MEJORAS:
-// - Busca con varias estrategias (brand/generic/substance) y sin comillas
-// - Normaliza acentos (amoxicilín → amoxicilin) para que encuentre más
-// - Si lang=es y no encuentra, traduce ES->EN y reintenta
-// - Si lang=en, NO traduce (sale en inglés)
-// - Cache simple (evita golpear OpenFDA/Translate por lo mismo)
+// INFORMACIÓN FARMACÉUTICA (OpenFDA) + LibreTranslate (sin AWS)
 // GET /api/drug-info?name=ibuprofeno&lang=es|en
 // ===============================
-const DRUG_CACHE = new Map(); // key -> { expires, value }
-const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+const DRUG_CACHE = new Map();
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 function cacheGet(key) {
   const hit = DRUG_CACHE.get(key);
@@ -624,11 +629,11 @@ function cacheSet(key, value) {
 app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res) => {
   try {
     const rawName = String(req.query.name || "").trim();
-    const lang = String(req.query.lang || "es").trim().toLowerCase(); // "es" o "en"
+    const lang = String(req.query.lang || "en").trim().toLowerCase(); // default EN
 
     if (!rawName) return res.status(400).json({ error: "Falta name" });
 
-    const safeLang = lang === "en" ? "en" : "es"; // default es
+    const safeLang = lang === "es" ? "es" : "en";
     const key = `${safeLang}:${normQuery(rawName)}`;
     const cached = cacheGet(key);
     if (cached) return res.json(cached);
@@ -638,19 +643,7 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
     async function openFdaFetch(search) {
       const url = `https://api.fda.gov/drug/label.json?search=${encodeURIComponent(search)}&limit=1`;
       const r = await fetchFn(url);
-
-      // OpenFDA a veces devuelve 404/429 con JSON de error
-      if (!r.ok) {
-        let msg = `${r.status}`;
-        try {
-          const j = await r.json();
-          msg = j?.error?.message || msg;
-        } catch {}
-        // No rompemos todo: solo consideramos "no encontrado" en esta estrategia
-        console.warn("OpenFDA not ok:", msg);
-        return null;
-      }
-
+      if (!r.ok) return null;
       const data = await r.json().catch(() => null);
       if (!data?.results?.length) return null;
       return data.results[0];
@@ -660,19 +653,12 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
       const t = cleanText(term);
       if (!t) return null;
 
-      // Estrategias (de más exacta a más flexible)
       const queries = [
-        // Exacto por brand/generic
-        `openfda.brand_name:"${t}" OR openfda.generic_name:"${t}"`,
-        // Flexible sin comillas (tokeniza)
-        `openfda.brand_name:${t} OR openfda.generic_name:${t}`,
-        // Por sustancia (cuando la marca no coincide)
-        `openfda.substance_name:"${t}" OR openfda.substance_name:${t}`,
-        // Algunos labels tienen active_ingredient como campo (no openfda.*)
+        `openfda.brand_name:"${t}" OR openfda.generic_name:"${t}" OR openfda.substance_name:"${t}"`,
+        `openfda.brand_name:${t} OR openfda.generic_name:${t} OR openfda.substance_name:${t}`,
         `active_ingredient:"${t}" OR active_ingredient:${t}`,
       ];
 
-      // Si tiene varias palabras, probamos también la primera (a veces funciona mejor)
       const first = t.split(/\s+/)[0];
       if (first && first !== t) {
         queries.push(
@@ -688,44 +674,31 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
       return null;
     }
 
-    // 1) Intento con el término tal cual + normalizado sin acentos
-    const nameNoAccents = stripAccents(rawName);
     const tried = [];
     let foundPack = null;
     let searched_term = rawName;
     let query_translated_from = null;
-    let search_used = null;
 
-    // intento 1
+    // intento 1: tal cual
     tried.push(rawName);
     foundPack = await searchOpenFDA(rawName);
 
-    // intento 1.1 (sin acentos)
-    if (!foundPack && nameNoAccents && nameNoAccents !== rawName) {
-      tried.push(nameNoAccents);
-      foundPack = await searchOpenFDA(nameNoAccents);
-      if (foundPack) searched_term = nameNoAccents;
+    // intento 1.1: sin acentos
+    const noAcc = stripAccents(rawName);
+    if (!foundPack && noAcc && noAcc !== rawName) {
+      tried.push(noAcc);
+      foundPack = await searchOpenFDA(noAcc);
+      if (foundPack) searched_term = noAcc;
     }
 
-    // 2) Si piden ES y no encontró, traducimos query ES->EN y reintentamos
+    // intento 2: si piden ES y no encontró → traducir query ES->EN y reintentar
     if (!foundPack && safeLang === "es") {
       const enTerm = await translateEsToEn(rawName);
-      const enNoAccents = stripAccents(enTerm);
-
       if (enTerm && enTerm.toLowerCase() !== rawName.toLowerCase()) {
         tried.push(enTerm);
         foundPack = await searchOpenFDA(enTerm);
         if (foundPack) {
           searched_term = enTerm;
-          query_translated_from = rawName;
-        }
-      }
-
-      if (!foundPack && enNoAccents && enNoAccents !== enTerm) {
-        tried.push(enNoAccents);
-        foundPack = await searchOpenFDA(enNoAccents);
-        if (foundPack) {
-          searched_term = enNoAccents;
           query_translated_from = rawName;
         }
       }
@@ -746,15 +719,12 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
     }
 
     const d = foundPack.d;
-    search_used = foundPack.usedQuery;
 
-    // Base (normalmente viene en inglés)
     const out = {
       found: true,
       query: rawName,
-      searched_term, // término final (posible traducción / sin acentos)
-      query_translated_from, // si existió fallback ES->EN
-      search_used, // para debug (lo puedes ocultar luego si quieres)
+      searched_term,
+      query_translated_from,
       brand_name: pick(d.openfda?.brand_name) || rawName,
       generic_name: pick(d.openfda?.generic_name) || "",
       active_ingredient: cleanText(
@@ -774,8 +744,7 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
       tried,
     };
 
-    // 3) Si piden ES, traducimos campos “largos”.
-    //    OJO: si AWS Translate falla, devolvemos EN (original) y marcamos translation_ok=false
+    // si piden ES: traducir campos largos con LibreTranslate
     if (safeLang === "es") {
       const fieldsToTranslate = [
         "indications",
@@ -793,29 +762,23 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
         if (!original) continue;
         const tr = await translateToEs(original, "en");
         out[k] = tr;
-        // Si por algún motivo el “traducido” sale igual que el original (muy común cuando falla creds),
-        // marcamos como “no ok” para que lo puedas mostrar/depurar en el frontend.
         if (cleanText(tr) === cleanText(original)) okAll = false;
       }
 
-      out.translated_by = "aws-translate";
+      out.translated_by = "libretranslate";
       out.translation_ok = okAll;
-    } else {
-      // lang=en => jamás traducimos
-      out.translation_ok = null;
     }
 
     cacheSet(key, out);
     res.json(out);
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: "Error consultando OpenFDA/Translate" });
+    res.status(500).json({ error: "Error consultando OpenFDA/LibreTranslate" });
   }
 });
 
 // ==================== EXPORT EXCEL ====================
 
-// Helper: set headers para descarga excel
 function setXlsxDownload(res, filename) {
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
@@ -999,6 +962,6 @@ const PORT = Number(process.env.PORT || 3000);
 init().then(() => {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`✅ Backend corriendo en http://0.0.0.0:${PORT}`);
-    console.log(`✅ AWS_REGION: ${AWS_REGION}`);
+    console.log(`✅ LibreTranslate URL: ${LIBRETRANSLATE_URL}`);
   });
 });
