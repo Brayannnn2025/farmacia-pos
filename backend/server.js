@@ -31,10 +31,6 @@ app.use(express.static(FRONTEND_DIR));
 // =========================
 // FETCH (para Node < 18)
 // =========================
-// Node 18+ ya trae fetch global.
-// Si tu Node es < 18, habilitamos fetch con node-fetch (import dinámico).
-// NOTA: Si luego te sale "fetch is not defined", instala en EC2:
-// cd backend && npm i node-fetch
 const fetchFn = global.fetch
   ? global.fetch.bind(global)
   : (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
@@ -42,24 +38,19 @@ const fetchFn = global.fetch
 // =========================
 // AWS TRANSLATE
 // =========================
-// Recomendado: export AWS_REGION=us-east-1 (o tu región)
 const AWS_REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
-
-// AWS Translate es un servicio regional; usar la región donde tengas permisos.
-// Si estás en EC2 con IAM Role, NO necesitas keys en código.
 const translateClient = new TranslateClient({ region: AWS_REGION });
 
-// Limpieza simple para no mandar basura a Translate
 function cleanText(s) {
   return String(s || "").replace(/\s+/g, " ").trim();
 }
 
-// Traduce un texto si existe. Si falla, devuelve el original.
-async function translateToEs(text, sourceLang = "en") {
+// Traducción genérica segura (fallback a original)
+async function translateSafe(text, sourceLang, targetLang) {
   const t = cleanText(text);
   if (!t) return "";
 
-  // AWS Translate tiene límite por request; por seguridad recortamos
+  // AWS Translate límite: por seguridad recortamos
   const MAX_CHARS = 4500;
   const input = t.length > MAX_CHARS ? t.slice(0, MAX_CHARS) : t;
 
@@ -67,7 +58,7 @@ async function translateToEs(text, sourceLang = "en") {
     const cmd = new TranslateTextCommand({
       Text: input,
       SourceLanguageCode: sourceLang,
-      TargetLanguageCode: "es",
+      TargetLanguageCode: targetLang,
     });
     const out = await translateClient.send(cmd);
     return cleanText(out?.TranslatedText || input);
@@ -75,6 +66,13 @@ async function translateToEs(text, sourceLang = "en") {
     console.error("❌ AWS Translate error:", e?.name || e, e?.message || "");
     return input;
   }
+}
+
+async function translateToEs(text, sourceLang = "en") {
+  return translateSafe(text, sourceLang, "es");
+}
+async function translateEsToEn(text) {
+  return translateSafe(text, "es", "en");
 }
 
 // =========================
@@ -229,7 +227,6 @@ async function init() {
 // =========================
 app.get("/health", (_, res) => res.json({ ok: true }));
 
-// Root = login
 app.get("/", (_req, res) => res.sendFile(path.join(FRONTEND_DIR, "login.html")));
 app.get("/login", (_req, res) => res.sendFile(path.join(FRONTEND_DIR, "login.html")));
 app.get("/dashboard", (_req, res) => res.sendFile(path.join(FRONTEND_DIR, "dashboard.html")));
@@ -298,7 +295,9 @@ app.delete("/api/users/:id", auth, requireRole("admin"), async (req, res) => {
 
   if (user.role === "admin") {
     const admins = await get(`SELECT COUNT(*) as c FROM users WHERE role='admin'`);
-    if ((admins?.c || 0) <= 1) return res.status(400).json({ error: "No puedes eliminar el último admin" });
+    if ((admins?.c || 0) <= 1) {
+      return res.status(400).json({ error: "No puedes eliminar el último admin" });
+    }
   }
 
   await run(`DELETE FROM users WHERE id=?`, [id]);
@@ -590,32 +589,57 @@ app.get("/api/dashboard/summary", auth, requireRole("admin", "cajero"), async (r
 // ===============================
 // INFORMACIÓN FARMACÉUTICA (OpenFDA) + AWS Translate
 // Visible para admin y cajero
-// GET /api/drug-info?name=paracetamol&lang=es
+// GET /api/drug-info?name=amoxicilina&lang=es
 // ===============================
 app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res) => {
   try {
     const name = String(req.query.name || "").trim();
-    const lang = String(req.query.lang || "es").trim().toLowerCase(); // ✅ aquí está el &lang=es
+    const lang = String(req.query.lang || "es").trim().toLowerCase(); // ✅ &lang=es
 
     if (!name) return res.status(400).json({ error: "Falta name" });
 
-    // Buscar por nombre comercial o genérico
-    const q = encodeURIComponent(`openfda.brand_name:"${name}" OR openfda.generic_name:"${name}"`);
-    const url = `https://api.fda.gov/drug/label.json?search=${q}&limit=1`;
-
-    const r = await fetchFn(url);
-    const data = await r.json();
-
-    if (!data.results || data.results.length === 0) {
-      return res.json({ found: false, query: name, source: "openfda" });
-    }
-
-    const d = data.results[0];
     const pick = (x) => (Array.isArray(x) ? (x[0] || "") : (x || ""));
 
+    // Helper: buscar en OpenFDA
+    async function searchOpenFDA(term) {
+      const q = encodeURIComponent(`openfda.brand_name:"${term}" OR openfda.generic_name:"${term}"`);
+      const url = `https://api.fda.gov/drug/label.json?search=${q}&limit=1`;
+      const r = await fetchFn(url);
+      const data = await r.json();
+      if (!data.results || data.results.length === 0) return null;
+      return data.results[0];
+    }
+
+    // 1) Intento: tal cual
+    let d = await searchOpenFDA(name);
+    let searched_term = name;
+    let query_translated_from = null;
+
+    // 2) Fallback: si no encuentra y lang=es => traducir query ES->EN y reintentar
+    if (!d && lang === "es") {
+      const enTerm = await translateEsToEn(name);
+      if (enTerm && enTerm.toLowerCase() !== name.toLowerCase()) {
+        d = await searchOpenFDA(enTerm);
+        searched_term = enTerm;
+        query_translated_from = name;
+      }
+    }
+
+    if (!d) {
+      return res.json({
+        found: false,
+        query: name,
+        tried: lang === "es" ? [name, searched_term].filter(Boolean) : [name],
+        source: "openfda",
+      });
+    }
+
+    // Base (normalmente viene en inglés)
     const out = {
       found: true,
       query: name,
+      searched_term,                // término real usado para consultar OpenFDA
+      query_translated_from,        // si existió fallback ES->EN
       brand_name: pick(d.openfda?.brand_name) || name,
       generic_name: pick(d.openfda?.generic_name) || "",
       active_ingredient: cleanText(pick(d.active_ingredient) || pick(d.openfda?.substance_name) || ""),
@@ -627,11 +651,11 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
       pregnancy: cleanText(pick(d.pregnancy) || pick(d.pregnancy_or_breast_feeding) || ""),
       storage: cleanText(pick(d.storage_and_handling) || ""),
       source: "openfda",
-      lang: lang,
+      lang,
       translated_by: null,
     };
 
-    // ✅ Si piden español, traducimos los campos “largos”
+    // 3) Si piden español, traducimos campos “largos”
     if (lang === "es") {
       const fieldsToTranslate = [
         "indications",
@@ -643,7 +667,6 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
         "storage",
       ];
 
-      // Traducción en paralelo
       const translated = await Promise.all(
         fieldsToTranslate.map(async (k) => [k, await translateToEs(out[k], "en")])
       );
@@ -669,7 +692,6 @@ function setXlsxDownload(res, filename) {
 }
 
 // ✅ A) Exportar Inventario
-// GET /api/export/inventory.xlsx
 app.get("/api/export/inventory.xlsx", auth, requireRole("admin", "cajero"), async (_req, res) => {
   try {
     const rows = await all(
@@ -745,7 +767,6 @@ app.get("/api/export/inventory.xlsx", auth, requireRole("admin", "cajero"), asyn
 });
 
 // ✅ B) Exportar Ventas por rango
-// GET /api/export/sales.xlsx?from=YYYY-MM-DD&to=YYYY-MM-DD
 app.get("/api/export/sales.xlsx", auth, requireRole("admin", "cajero"), async (req, res) => {
   try {
     const from = String(req.query.from || "").trim();
