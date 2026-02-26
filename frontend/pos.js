@@ -673,7 +673,7 @@ async function sell() {
    Init
 ========================= */
 function initPos() {
-  requireAuth(["admin", "cajero"]);
+ requireAuth(["admin", "cajero"]);
   applyRoleVisibility();
 
   qs("btnReload").onclick = loadProducts;
@@ -686,6 +686,27 @@ function initPos() {
   };
 
   qs("btnSell").onclick = sell;
+
+  // ✅ NUEVO: buscador visible en el panel Productos
+  const topInp = document.getElementById("drugSearchTop");
+  const topBtn = document.getElementById("btnDrugSearchTop");
+
+  const doTopSearch = async () => {
+    const v = (topInp?.value || "").trim();
+    if (!v) {
+      setMsg("Escribe un medicamento para buscar su información.", true);
+      return;
+    }
+    setMsg("", true);
+    await showDrugInfo(v);
+  };
+
+  if (topBtn) topBtn.onclick = doTopSearch;
+  if (topInp) {
+    topInp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") doTopSearch();
+    });
+  }
 
   renderCart();
   loadProducts();
