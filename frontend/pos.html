@@ -15,6 +15,21 @@
     .searchbar{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
     .searchbar input{ flex:1 1 260px; }
 
+    /* ✅ Panel “Info farmacéutica” (buscador visible) */
+    .drugbar{
+      display:flex;
+      gap:10px;
+      align-items:center;
+      flex-wrap:wrap;
+      margin-top:10px;
+      padding:10px;
+      border:1px solid #eef2f7;
+      border-radius:14px;
+      background:#f8fafc;
+    }
+    .drugbar input{ flex:1 1 260px; }
+    .drugbar .hint{ font-size:12px; color:#64748b; }
+
     /* Catálogo con cards */
     .catalog{
       display:grid;
@@ -124,7 +139,13 @@
 
     <p class="small">Haz clic en un producto para agregarlo al carrito.</p>
 
-    <!-- ✅ Catálogo con tarjetas -->
+    <!-- ✅ NUEVO: buscador visible de info farmacéutica -->
+    <div class="drugbar">
+      <input id="drugSearchTop" placeholder="Info farmacéutica: ej. paracetamol, amoxicilina, ibuprofeno..." />
+      <button id="btnDrugSearchTop" type="button" class="secondary">Buscar info</button>
+      <div class="hint">Se abre un panel con información (si existe en OpenFDA).</div>
+    </div>
+
     <div id="products" class="catalog"></div>
   </section>
 
@@ -169,10 +190,8 @@
   applyRoleVisibility();
 </script>
 
-<!-- ✅ IMPORTANTE:
-     Eliminamos el modal viejo #drugModal porque el modal PRO lo crea pos.js automáticamente.
-     Si lo dejas aquí, se bugea (no aparecen drugSearchInput / toggle).
--->
+<!-- ✅ IMPORTANTE: ya NO ponemos <div id="drugModal">...</div> aquí.
+     El modal PRO lo crea pos.js (ensureDrugModal). -->
 
 <script src="pos.js"></script>
 </body>
