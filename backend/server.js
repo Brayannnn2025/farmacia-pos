@@ -38,7 +38,7 @@ const fetchFn = global.fetch
 //   LIBRETRANSLATE_URL=https://libretranslate.com/translate
 //   LIBRETRANSLATE_API_KEY=xxxxx (opcional)
 const LIBRETRANSLATE_URL =
-  process.env.LIBRETRANSLATE_URL || "https://libretranslate.com/translate";
+  process.env.LIBRETRANSLATE_URL || "https://translate.argosopentech.com/translate";
 const LIBRETRANSLATE_API_KEY = process.env.LIBRETRANSLATE_API_KEY || "";
 
 function cleanText(s) {
