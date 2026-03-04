@@ -1,53 +1,48 @@
-// app.js
+// app.js (SaaS por tenant slug en login)
 
-// ✅ API dinámico: usa el mismo host/puerto donde abriste la web
-// Ej: si abres http://35.171.xxx.xxx:3000/login.html
-// entonces API = http://35.171.xxx.xxx:3000
 const API = `${location.protocol}//${location.host}`;
 
-// Helper DOM (NO redeclarar $ en otros .js)
 function $(id) { return document.getElementById(id); }
 
-// Auth storage
 function token() { return localStorage.getItem("token"); }
 
 function getUser() {
   try { return JSON.parse(localStorage.getItem("user") || "null"); }
   catch { return null; }
 }
+function setUser(u) { localStorage.setItem("user", JSON.stringify(u)); }
 
-function setUser(u) {
-  localStorage.setItem("user", JSON.stringify(u));
-}
+function getTenantSlug() { return localStorage.getItem("tenant_slug") || ""; }
+function setTenantSlug(slug) { localStorage.setItem("tenant_slug", String(slug || "").trim()); }
 
 function role() {
   const u = getUser();
-  return (u && u.role) ? u.role : null; // "admin" | "cajero"
+  return (u && u.role) ? u.role : null;
 }
 
 function isAdmin() { return role() === "admin"; }
 function isCashier() { return role() === "cajero"; }
+function isSuperadmin() { return role() === "superadmin"; }
 
-// A qué página mandarlo según rol
 function homeForRole() {
+  if (isSuperadmin()) return "login.html"; // superadmin no usa POS normal (luego le hacemos panel)
   return isAdmin() ? "dashboard.html" : "pos.html";
 }
 
-// Requiere login (y opcionalmente roles permitidos)
 function requireAuth(allowedRoles = null) {
-  if (!token()) {
-    location.href = "login.html";
-    return;
-  }
+  if (!token()) { location.href = "login.html"; return; }
+
   if (Array.isArray(allowedRoles) && allowedRoles.length > 0) {
     const r = role();
-    if (!allowedRoles.includes(r)) {
-      location.href = homeForRole();
-    }
+    if (!allowedRoles.includes(r)) location.href = homeForRole();
+  }
+
+  // si no es superadmin, debe existir tenant_slug
+  if (!isSuperadmin() && !getTenantSlug()) {
+    location.href = "login.html";
   }
 }
 
-// Mostrar/ocultar elementos por rol usando data-role
 function applyRoleVisibility() {
   const r = role();
   document.querySelectorAll("[data-role]").forEach(el => {
@@ -62,24 +57,25 @@ function applyRoleVisibility() {
 }
 
 // =======================
-// API JSON (NORMAL)
+// API JSON (SaaS)
 // =======================
 async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
 
-  // Si mandas body JSON, metemos Content-Type
-  if (opts.body && !headers["Content-Type"]) {
-    headers["Content-Type"] = "application/json";
-  }
+  if (opts.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
 
   const t = token();
   if (t) headers["Authorization"] = "Bearer " + t;
 
+  // ✅ SaaS header
+  if (!isSuperadmin()) {
+    const slug = getTenantSlug();
+    if (slug) headers["X-Tenant-Slug"] = slug;
+  }
+
   const res = await fetch(API + path, { ...opts, headers });
 
-  // Si expiró el token -> forzamos logout suave
   if (res.status === 401) {
-    // no redirigimos si estás en login
     if (!location.pathname.endsWith("login.html")) logout();
     throw new Error("No autorizado. Vuelve a iniciar sesión.");
   }
@@ -94,32 +90,23 @@ async function api(path, opts = {}) {
 }
 
 // =======================
-// DESCARGA EXCEL (XLSX) ✅
+// DESCARGA XLSX
 // =======================
-// Úsalo así:
-// await downloadXlsx("/api/export/inventory.xlsx", "inventario.xlsx");
-// await downloadXlsx(`/api/export/sales.xlsx?from=2026-02-01&to=2026-02-18`, "ventas.xlsx");
 async function downloadXlsx(endpoint, filename = "reporte.xlsx") {
   const t = token();
-  if (!t) {
-    location.href = "login.html";
-    return;
+  if (!t) { location.href = "login.html"; return; }
+
+  const headers = { Authorization: "Bearer " + t };
+
+  if (!isSuperadmin()) {
+    const slug = getTenantSlug();
+    if (slug) headers["X-Tenant-Slug"] = slug;
   }
 
-  const res = await fetch(API + endpoint, {
-    method: "GET",
-    headers: {
-      Authorization: "Bearer " + t
-    }
-  });
+  const res = await fetch(API + endpoint, { method: "GET", headers });
 
-  if (res.status === 401) {
-    logout();
-    throw new Error("No autorizado. Vuelve a iniciar sesión.");
-  }
-
+  if (res.status === 401) { logout(); throw new Error("No autorizado. Vuelve a iniciar sesión."); }
   if (!res.ok) {
-    // intentamos leer error como texto
     const txt = await res.text().catch(() => "");
     throw new Error(`No se pudo descargar el Excel (HTTP ${res.status}). ${txt}`);
   }
@@ -137,8 +124,6 @@ async function downloadXlsx(endpoint, filename = "reporte.xlsx") {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
-// (Compatibilidad) si ya llamabas downloadExcel(...) en tu código viejo
-// ahora internamente usa downloadXlsx
 async function downloadExcel(endpoint, filename) {
   return downloadXlsx(endpoint, filename);
 }
@@ -146,6 +131,7 @@ async function downloadExcel(endpoint, filename) {
 function logout() {
   localStorage.removeItem("token");
   localStorage.removeItem("user");
+  localStorage.removeItem("tenant_slug");
   location.href = "login.html";
 }
 
