@@ -1,4 +1,4 @@
-// backend/server.js
+// backend/server.js (SaaS multi-farmacia por slug en login)
 const express = require("express");
 const cors = require("cors");
 const sqlite3 = require("sqlite3").verbose();
@@ -32,11 +32,8 @@ const fetchFn = global.fetch
   : (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 // =========================
-// LIBRETRANSLATE (sin AWS)
+// LIBRETRANSLATE
 // =========================
-// Puedes setear en .env o PM2:
-//   LIBRETRANSLATE_URL=https://libretranslate.com/translate
-//   LIBRETRANSLATE_API_KEY=xxxxx (opcional)
 const LIBRETRANSLATE_URL =
   process.env.LIBRETRANSLATE_URL || "https://translate.argosopentech.com/translate";
 const LIBRETRANSLATE_API_KEY = process.env.LIBRETRANSLATE_API_KEY || "";
@@ -53,7 +50,6 @@ function normQuery(s) {
   return cleanText(stripAccents(String(s || "")).toLowerCase());
 }
 
-// Traducción genérica segura (fallback a original)
 async function translateSafe(text, sourceLang, targetLang) {
   const t = cleanText(text);
   if (!t) return "";
@@ -62,12 +58,7 @@ async function translateSafe(text, sourceLang, targetLang) {
   const input = t.length > MAX_CHARS ? t.slice(0, MAX_CHARS) : t;
 
   try {
-    const body = {
-      q: input,
-      source: sourceLang,
-      target: targetLang,
-      format: "text",
-    };
+    const body = { q: input, source: sourceLang, target: targetLang, format: "text" };
     if (LIBRETRANSLATE_API_KEY) body.api_key = LIBRETRANSLATE_API_KEY;
 
     const r = await fetchFn(LIBRETRANSLATE_URL, {
@@ -76,17 +67,11 @@ async function translateSafe(text, sourceLang, targetLang) {
       body: JSON.stringify(body),
     });
 
-    if (!r.ok) {
-      const txt = await r.text().catch(() => "");
-      console.error("❌ LibreTranslate error:", r.status, txt.slice(0, 200));
-      return input;
-    }
-
+    if (!r.ok) return input;
     const out = await r.json().catch(() => null);
     const translated = cleanText(out?.translatedText || "");
     return translated || input;
-  } catch (e) {
-    console.error("❌ LibreTranslate exception:", e?.message || e);
+  } catch {
     return input;
   }
 }
@@ -142,6 +127,7 @@ function auth(req, res, next) {
     return res.status(401).json({ error: "Token inválido" });
   }
 }
+
 function requireRole(...roles) {
   return (req, res, next) => {
     const r = req.user?.role;
@@ -151,12 +137,52 @@ function requireRole(...roles) {
 }
 
 // =========================
+// SaaS Tenant helpers
+// =========================
+function slugify(s) {
+  return cleanText(String(s || ""))
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .trim();
+}
+
+// De frontend mandaremos header: X-Tenant-Slug
+function tenantFromHeader(req) {
+  const slug = cleanText(req.headers["x-tenant-slug"] || "");
+  return slug ? slugify(slug) : "";
+}
+
+// Verifica que el token pertenezca al tenant del header
+async function requireTenant(req, res, next) {
+  const slug = tenantFromHeader(req);
+  if (!slug) return res.status(400).json({ error: "Falta X-Tenant-Slug" });
+
+  const t = await get(`SELECT * FROM tenants WHERE slug=? AND status='active'`, [slug]);
+  if (!t) return res.status(404).json({ error: "Farmacia no encontrada o inactiva" });
+
+  // superadmin (global) puede operar sin tenant_id
+  if (req.user?.role === "superadmin") {
+    req.tenant = t;
+    return next();
+  }
+
+  // usuarios normales deben coincidir con tenant
+  if (!req.user?.tenant_id || Number(req.user.tenant_id) !== Number(t.id)) {
+    return res.status(403).json({ error: "Tenant no autorizado para este usuario" });
+  }
+
+  req.tenant = t;
+  next();
+}
+
+// =========================
 // Utils
 // =========================
 function isoNow() {
   return new Date().toISOString();
 }
-
 function isExpired(expiry_date) {
   if (!expiry_date) return false;
   const d = new Date(expiry_date + "T00:00:00");
@@ -177,40 +203,95 @@ async function ensureColumn(table, column, typeSql) {
   }
 }
 
+// =========================
+// Auditoría
+// =========================
+async function audit(req, action, entity, entity_id, metadata = {}) {
+  try {
+    const tenant_id = req.tenant?.id ?? null;
+    const user_id = req.user?.id ?? null;
+    await run(
+      `INSERT INTO audit_log(tenant_id,user_id,action,entity,entity_id,metadata,created_at)
+       VALUES(?,?,?,?,?,?,?)`,
+      [
+        tenant_id,
+        user_id,
+        String(action),
+        String(entity),
+        entity_id != null ? String(entity_id) : null,
+        JSON.stringify(metadata || {}),
+        isoNow(),
+      ]
+    );
+  } catch (e) {
+    console.error("audit error:", e?.message || e);
+  }
+}
+
+// =========================
+// INIT DB (SaaS)
+// =========================
 async function init() {
+  // tenants
+  await run(`
+    CREATE TABLE IF NOT EXISTS tenants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      slug TEXT UNIQUE NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  // users (agregamos tenant_id y role superadmin)
   await run(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER,
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'admin'
+      role TEXT NOT NULL DEFAULT 'admin',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id)
     )
   `);
 
+  // products
   await run(`
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      code TEXT UNIQUE NOT NULL,
+      tenant_id INTEGER,
+      code TEXT NOT NULL,
       name TEXT NOT NULL,
       lab TEXT DEFAULT '',
+      location TEXT DEFAULT '',
       stock INTEGER NOT NULL DEFAULT 0,
       buy_price REAL NOT NULL DEFAULT 0,
       sell_price REAL NOT NULL DEFAULT 0,
-      expiry_date TEXT DEFAULT NULL
+      expiry_date TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(tenant_id, code),
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id)
     )
   `);
 
+  // sales
   await run(`
     CREATE TABLE IF NOT EXISTS sales (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER,
       date TEXT NOT NULL,
       total REAL NOT NULL,
       payment_method TEXT NOT NULL,
       seller_user_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id),
       FOREIGN KEY (seller_user_id) REFERENCES users(id)
     )
   `);
 
+  // sale_items
   await run(`
     CREATE TABLE IF NOT EXISTS sale_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -224,24 +305,81 @@ async function init() {
     )
   `);
 
-  await ensureColumn("products", "location", "TEXT DEFAULT ''");
+  // audit log
+  await run(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER,
+      user_id INTEGER,
+      action TEXT NOT NULL,
+      entity TEXT NOT NULL,
+      entity_id TEXT,
+      metadata TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `);
 
+  // Si vienes de tu DB anterior (ya creada), aseguramos columnas mínimas
+  await ensureColumn("users", "tenant_id", "INTEGER");
+  await ensureColumn("users", "created_at", "TEXT");
+  await ensureColumn("products", "tenant_id", "INTEGER");
+  await ensureColumn("products", "location", "TEXT DEFAULT ''");
+  await ensureColumn("sales", "tenant_id", "INTEGER");
+  await ensureColumn("sales", "created_at", "TEXT");
+
+  // tenant default
+  let t = await get(`SELECT * FROM tenants WHERE slug=?`, ["default"]);
+  if (!t) {
+    await run(`INSERT INTO tenants(name,slug,status,created_at) VALUES(?,?,?,?)`, [
+      "Farmacia Default",
+      "default",
+      "active",
+      isoNow(),
+    ]);
+    t = await get(`SELECT * FROM tenants WHERE slug=?`, ["default"]);
+    console.log("✅ Tenant creado: default");
+  }
+
+  // Asignar tenant_id a data vieja (si había null)
+  await run(`UPDATE users SET tenant_id=? WHERE tenant_id IS NULL AND role != 'superadmin'`, [t.id]);
+  await run(`UPDATE products SET tenant_id=? WHERE tenant_id IS NULL`, [t.id]);
+  await run(`UPDATE sales SET tenant_id=? WHERE tenant_id IS NULL`, [t.id]);
+
+  // superadmin global (NO tenant)
+  const sa = await get(`SELECT * FROM users WHERE username=?`, ["superadmin"]);
+  if (!sa) {
+    const hash = bcrypt.hashSync("superadmin123", 10);
+    await run(`INSERT INTO users(tenant_id, username, password_hash, role, created_at) VALUES(?,?,?,?,?)`, [
+      null,
+      "superadmin",
+      hash,
+      "superadmin",
+      isoNow(),
+    ]);
+    console.log("✅ Superadmin: superadmin / superadmin123");
+  }
+
+  // admin default si no existe (para el tenant default)
   const adminUser = await get(`SELECT * FROM users WHERE username=?`, ["admin"]);
   if (!adminUser) {
     const hash = bcrypt.hashSync("admin123", 10);
-    await run(`INSERT INTO users(username, password_hash, role) VALUES(?,?,?)`, [
+    await run(`INSERT INTO users(tenant_id, username, password_hash, role, created_at) VALUES(?,?,?,?,?)`, [
+      t.id,
       "admin",
       hash,
       "admin",
+      isoNow(),
     ]);
-    console.log("✅ Usuario creado: admin / admin123");
+    console.log("✅ Admin default: admin / admin123 (tenant default)");
   }
 
   console.log("✅ DB lista:", DB_PATH);
 }
 
 // =========================
-// RUTAS BASICAS
+// RUTAS BÁSICAS (FRONT)
 // =========================
 app.get("/health", (_, res) => res.json({ ok: true }));
 
@@ -250,40 +388,109 @@ app.get("/login", (_req, res) => res.sendFile(path.join(FRONTEND_DIR, "login.htm
 app.get("/dashboard", (_req, res) => res.sendFile(path.join(FRONTEND_DIR, "dashboard.html")));
 
 // =========================
-// AUTH
+// AUTH (login pide tenant_slug)
 // =========================
 app.post("/api/login", async (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) return res.status(400).json({ error: "Faltan datos" });
+  const { username, password, tenant_slug } = req.body || {};
+  const u = cleanText(username);
+  const p = cleanText(password);
+  const slug = slugify(tenant_slug);
 
-  const user = await get(`SELECT * FROM users WHERE username=?`, [username]);
+  if (!u || !p) return res.status(400).json({ error: "Faltan datos" });
+
+  // superadmin no requiere tenant
+  if (u === "superadmin") {
+    const user = await get(`SELECT * FROM users WHERE username=?`, [u]);
+    if (!user) return res.status(401).json({ error: "Credenciales inválidas" });
+
+    const ok = bcrypt.compareSync(p, user.password_hash);
+    if (!ok) return res.status(401).json({ error: "Credenciales inválidas" });
+
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role: user.role, tenant_id: null },
+      JWT_SECRET,
+      { expiresIn: "12h" }
+    );
+    return res.json({ token, user: { id: user.id, username: user.username, role: user.role, tenant_id: null } });
+  }
+
+  if (!slug) return res.status(400).json({ error: "Falta farmacia (tenant_slug)" });
+
+  const tenant = await get(`SELECT * FROM tenants WHERE slug=? AND status='active'`, [slug]);
+  if (!tenant) return res.status(404).json({ error: "Farmacia no encontrada o inactiva" });
+
+  const user = await get(`SELECT * FROM users WHERE username=? AND tenant_id=?`, [u, tenant.id]);
   if (!user) return res.status(401).json({ error: "Credenciales inválidas" });
 
-  const ok = bcrypt.compareSync(password, user.password_hash);
+  const ok = bcrypt.compareSync(p, user.password_hash);
   if (!ok) return res.status(401).json({ error: "Credenciales inválidas" });
 
   const token = jwt.sign(
-    { id: user.id, username: user.username, role: user.role },
+    { id: user.id, username: user.username, role: user.role, tenant_id: tenant.id },
     JWT_SECRET,
     { expiresIn: "12h" }
   );
 
-  res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
+  res.json({
+    token,
+    user: { id: user.id, username: user.username, role: user.role, tenant_id: tenant.id },
+    tenant: { id: tenant.id, slug: tenant.slug, name: tenant.name },
+  });
 });
 
 // =========================
-// USERS (ADMIN)
+// TENANTS (solo superadmin)
 // =========================
-app.get("/api/users", auth, requireRole("admin"), async (_req, res) => {
-  const rows = await all(`SELECT id, username, role FROM users ORDER BY id ASC`);
+app.post("/api/tenants", auth, requireRole("superadmin"), async (req, res) => {
+  const { name, slug } = req.body || {};
+  const n = cleanText(name);
+  const s = slugify(slug || name);
+
+  if (!n) return res.status(400).json({ error: "Falta name" });
+  if (!s) return res.status(400).json({ error: "Falta slug" });
+
+  try {
+    const r = await run(`INSERT INTO tenants(name,slug,status,created_at) VALUES(?,?,?,?)`, [
+      n, s, "active", isoNow(),
+    ]);
+    const t = await get(`SELECT * FROM tenants WHERE id=?`, [r.id]);
+
+    // crear admin base de esa farmacia (opcional, pero útil)
+    const adminPass = "admin123"; // cámbialo por uno random si quieres
+    const hash = bcrypt.hashSync(adminPass, 10);
+    const adminUser = `${s}_admin`;
+    await run(`INSERT INTO users(tenant_id, username, password_hash, role, created_at) VALUES(?,?,?,?,?)`, [
+      t.id, adminUser, hash, "admin", isoNow(),
+    ]);
+
+    res.json({ tenant: t, created_admin: { username: adminUser, password: adminPass } });
+  } catch (e) {
+    res.status(400).json({ error: "No se pudo crear tenant (¿slug repetido?)" });
+  }
+});
+
+app.get("/api/tenants", auth, requireRole("superadmin"), async (_req, res) => {
+  const rows = await all(`SELECT id,name,slug,status,created_at FROM tenants ORDER BY id DESC`);
   res.json(rows);
 });
 
-app.post("/api/users", auth, requireRole("admin"), async (req, res) => {
+// =========================
+// USERS (ADMIN por tenant)
+// =========================
+app.get("/api/users", auth, requireRole("admin", "superadmin"), requireTenant, async (req, res) => {
+  // superadmin puede listar usuarios del tenant (si manda header)
+  const rows = await all(
+    `SELECT id, username, role, tenant_id FROM users WHERE tenant_id=? ORDER BY id ASC`,
+    [req.tenant.id]
+  );
+  res.json(rows);
+});
+
+app.post("/api/users", auth, requireRole("admin", "superadmin"), requireTenant, async (req, res) => {
   const { username, password, role } = req.body || {};
-  const u = String(username || "").trim();
-  const p = String(password || "").trim();
-  const r = String(role || "").trim();
+  const u = cleanText(username);
+  const p = cleanText(password);
+  const r = cleanText(role);
 
   if (!u || !p || !r) return res.status(400).json({ error: "Faltan datos" });
   if (!["admin", "cajero"].includes(r)) return res.status(400).json({ error: "Rol inválido" });
@@ -291,150 +498,156 @@ app.post("/api/users", auth, requireRole("admin"), async (req, res) => {
 
   try {
     const hash = bcrypt.hashSync(p, 10);
-    const rr = await run(`INSERT INTO users(username,password_hash,role) VALUES(?,?,?)`, [
-      u,
-      hash,
-      r,
-    ]);
-    const created = await get(`SELECT id, username, role FROM users WHERE id=?`, [rr.id]);
+    const rr = await run(
+      `INSERT INTO users(tenant_id, username, password_hash, role, created_at) VALUES(?,?,?,?,?)`,
+      [req.tenant.id, u, hash, r, isoNow()]
+    );
+    const created = await get(`SELECT id, username, role, tenant_id FROM users WHERE id=?`, [rr.id]);
+
+    await audit(req, "USER_CREATE", "user", rr.id, { username: u, role: r });
+
     res.json(created);
   } catch {
     res.status(400).json({ error: "No se pudo crear (¿usuario repetido?)" });
   }
 });
 
-app.delete("/api/users/:id", auth, requireRole("admin"), async (req, res) => {
+app.delete("/api/users/:id", auth, requireRole("admin", "superadmin"), requireTenant, async (req, res) => {
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ error: "ID inválido" });
-  if (req.user.id === id) {
-    return res.status(400).json({ error: "No puedes eliminar tu propio usuario" });
+
+  // no borrar a sí mismo
+  if (req.user.id === id) return res.status(400).json({ error: "No puedes eliminar tu propio usuario" });
+
+  const user = await get(`SELECT id, username, role, tenant_id FROM users WHERE id=?`, [id]);
+  if (!user || Number(user.tenant_id) !== Number(req.tenant.id)) {
+    return res.status(404).json({ error: "Usuario no encontrado" });
   }
 
-  const user = await get(`SELECT id, username, role FROM users WHERE id=?`, [id]);
-  if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
-
   if (user.role === "admin") {
-    const admins = await get(`SELECT COUNT(*) as c FROM users WHERE role='admin'`);
-    if ((admins?.c || 0) <= 1) {
-      return res.status(400).json({ error: "No puedes eliminar el último admin" });
-    }
+    const admins = await get(`SELECT COUNT(*) as c FROM users WHERE role='admin' AND tenant_id=?`, [req.tenant.id]);
+    if ((admins?.c || 0) <= 1) return res.status(400).json({ error: "No puedes eliminar el último admin" });
   }
 
   await run(`DELETE FROM users WHERE id=?`, [id]);
+  await audit(req, "USER_DELETE", "user", id, { username: user.username, role: user.role });
+
   res.json({ ok: true });
 });
 
 // =========================
-// PRODUCTS
+// PRODUCTS (por tenant)
 // =========================
-app.get("/api/products", auth, async (req, res) => {
-  const q = String(req.query.search || "").trim();
+app.get("/api/products", auth, requireRole("admin", "cajero", "superadmin"), requireTenant, async (req, res) => {
+  const q = cleanText(req.query.search);
 
   if (!q) {
-    const rows = await all(`SELECT * FROM products ORDER BY name ASC`);
+    const rows = await all(`SELECT * FROM products WHERE tenant_id=? ORDER BY name ASC`, [req.tenant.id]);
     return res.json(rows);
   }
 
   const like = `%${q}%`;
   const rows = await all(
-    `SELECT * FROM products WHERE name LIKE ? OR code LIKE ? ORDER BY name ASC`,
-    [like, like]
+    `SELECT * FROM products
+     WHERE tenant_id=? AND (name LIKE ? OR code LIKE ?)
+     ORDER BY name ASC`,
+    [req.tenant.id, like, like]
   );
   res.json(rows);
 });
 
-app.post("/api/products", auth, requireRole("admin"), async (req, res) => {
+app.post("/api/products", auth, requireRole("admin", "superadmin"), requireTenant, async (req, res) => {
   const {
-    code,
-    name,
-    lab = "",
-    location = "",
-    stock = 0,
-    buy_price = 0,
-    sell_price = 0,
-    expiry_date = null,
+    code, name, lab = "", location = "", stock = 0, buy_price = 0, sell_price = 0, expiry_date = null,
   } = req.body || {};
 
   if (!code || !name) return res.status(400).json({ error: "Faltan code o name" });
 
   try {
     const r = await run(
-      `INSERT INTO products(code,name,lab,location,stock,buy_price,sell_price,expiry_date)
-       VALUES(?,?,?,?,?,?,?,?)`,
+      `INSERT INTO products(tenant_id,code,name,lab,location,stock,buy_price,sell_price,expiry_date,created_at,updated_at)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
       [
-        String(code).trim(),
-        String(name).trim(),
-        String(lab || "").trim(),
-        String(location || "").trim(),
+        req.tenant.id,
+        cleanText(code),
+        cleanText(name),
+        cleanText(lab),
+        cleanText(location),
         Number(stock),
         Number(buy_price),
         Number(sell_price),
         expiry_date || null,
+        isoNow(),
+        isoNow(),
       ]
     );
 
     const p = await get(`SELECT * FROM products WHERE id=?`, [r.id]);
+    await audit(req, "PRODUCT_CREATE", "product", r.id, { code: p.code, name: p.name });
+
     res.json(p);
   } catch {
-    return res.status(400).json({ error: "No se pudo crear (¿código repetido?)" });
+    return res.status(400).json({ error: "No se pudo crear (¿código repetido en esta farmacia?)" });
   }
 });
 
-app.put("/api/products/:id", auth, requireRole("admin"), async (req, res) => {
+app.put("/api/products/:id", auth, requireRole("admin", "superadmin"), requireTenant, async (req, res) => {
   const id = Number(req.params.id);
   const {
-    code,
-    name,
-    lab = "",
-    location = "",
-    stock = 0,
-    buy_price = 0,
-    sell_price = 0,
-    expiry_date = null,
+    code, name, lab = "", location = "", stock = 0, buy_price = 0, sell_price = 0, expiry_date = null,
   } = req.body || {};
 
   if (!code || !name) return res.status(400).json({ error: "Faltan code o name" });
 
+  const before = await get(`SELECT * FROM products WHERE id=? AND tenant_id=?`, [id, req.tenant.id]);
+  if (!before) return res.status(404).json({ error: "Producto no encontrado" });
+
   try {
     await run(
       `UPDATE products
-       SET code=?, name=?, lab=?, location=?, stock=?, buy_price=?, sell_price=?, expiry_date=?
-       WHERE id=?`,
+       SET code=?, name=?, lab=?, location=?, stock=?, buy_price=?, sell_price=?, expiry_date=?, updated_at=?
+       WHERE id=? AND tenant_id=?`,
       [
-        String(code).trim(),
-        String(name).trim(),
-        String(lab || "").trim(),
-        String(location || "").trim(),
+        cleanText(code),
+        cleanText(name),
+        cleanText(lab),
+        cleanText(location),
         Number(stock),
         Number(buy_price),
         Number(sell_price),
         expiry_date || null,
+        isoNow(),
         id,
+        req.tenant.id,
       ]
     );
 
     const p = await get(`SELECT * FROM products WHERE id=?`, [id]);
+    await audit(req, "PRODUCT_UPDATE", "product", id, { before, after: p });
+
     res.json(p);
   } catch {
-    return res.status(400).json({ error: "No se pudo actualizar (¿código repetido?)" });
+    return res.status(400).json({ error: "No se pudo actualizar (¿código repetido en esta farmacia?)" });
   }
 });
 
-app.delete("/api/products/:id", auth, requireRole("admin"), async (req, res) => {
+app.delete("/api/products/:id", auth, requireRole("admin", "superadmin"), requireTenant, async (req, res) => {
   const id = Number(req.params.id);
-  await run(`DELETE FROM products WHERE id=?`, [id]);
+  const p = await get(`SELECT * FROM products WHERE id=? AND tenant_id=?`, [id, req.tenant.id]);
+  if (!p) return res.status(404).json({ error: "Producto no encontrado" });
+
+  await run(`DELETE FROM products WHERE id=? AND tenant_id=?`, [id, req.tenant.id]);
+  await audit(req, "PRODUCT_DELETE", "product", id, { code: p.code, name: p.name });
+
   res.json({ ok: true });
 });
 
 // =========================
-// SALES
+// SALES (por tenant)
 // =========================
-app.post("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) => {
+app.post("/api/sales", auth, requireRole("admin", "cajero", "superadmin"), requireTenant, async (req, res) => {
   const { items, payment_method = "efectivo" } = req.body || {};
-
-  if (!Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ error: "Carrito vacío" });
-  }
+  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: "Carrito vacío" });
 
   let total = 0;
 
@@ -443,13 +656,12 @@ app.post("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) =>
     const qty = Number(it.qty);
     if (!pid || qty <= 0) return res.status(400).json({ error: "Item inválido" });
 
-    const p = await get(`SELECT * FROM products WHERE id=?`, [pid]);
+    const p = await get(`SELECT * FROM products WHERE id=? AND tenant_id=?`, [pid, req.tenant.id]);
     if (!p) return res.status(400).json({ error: "Producto no existe" });
 
     if (p.expiry_date && isExpired(p.expiry_date)) {
       return res.status(400).json({ error: `Producto vencido: ${p.name} (${p.expiry_date})` });
     }
-
     if (p.stock < qty) return res.status(400).json({ error: `Stock insuficiente: ${p.name}` });
 
     const price_unit = Number(it.price_unit ?? p.sell_price);
@@ -459,8 +671,9 @@ app.post("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) =>
   const iso = isoNow();
 
   const saleR = await run(
-    `INSERT INTO sales(date,total,payment_method,seller_user_id) VALUES(?,?,?,?)`,
-    [iso, total, payment_method, req.user.id]
+    `INSERT INTO sales(tenant_id,date,total,payment_method,seller_user_id,created_at)
+     VALUES(?,?,?,?,?,?)`,
+    [req.tenant.id, iso, total, payment_method, req.user.id, isoNow()]
   );
 
   const sale_id = saleR.id;
@@ -469,7 +682,7 @@ app.post("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) =>
     const pid = Number(it.product_id);
     const qty = Number(it.qty);
 
-    const p = await get(`SELECT * FROM products WHERE id=?`, [pid]);
+    const p = await get(`SELECT * FROM products WHERE id=? AND tenant_id=?`, [pid, req.tenant.id]);
     const price_unit = Number(it.price_unit ?? p.sell_price);
     const subtotal = price_unit * qty;
 
@@ -478,10 +691,15 @@ app.post("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) =>
       [sale_id, pid, qty, price_unit, subtotal]
     );
 
-    await run(`UPDATE products SET stock = stock - ? WHERE id=?`, [qty, pid]);
+    await run(`UPDATE products SET stock = stock - ?, updated_at=? WHERE id=? AND tenant_id=?`, [
+      qty,
+      isoNow(),
+      pid,
+      req.tenant.id,
+    ]);
   }
 
-  const sale = await get(`SELECT * FROM sales WHERE id=?`, [sale_id]);
+  const sale = await get(`SELECT * FROM sales WHERE id=? AND tenant_id=?`, [sale_id, req.tenant.id]);
   const saleItems = await all(
     `SELECT si.*, p.name, p.code
      FROM sale_items si
@@ -490,25 +708,27 @@ app.post("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) =>
     [sale_id]
   );
 
+  await audit(req, "SALE_CREATE", "sale", sale_id, { total, payment_method, items_count: items.length });
+
   res.json({ sale, items: saleItems });
 });
 
-app.get("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) => {
+app.get("/api/sales", auth, requireRole("admin", "cajero", "superadmin"), requireTenant, async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 100), 500);
-  const from = String(req.query.from || "").trim();
-  const to = String(req.query.to || "").trim();
+  const from = cleanText(req.query.from);
+  const to = cleanText(req.query.to);
 
-  let sql = `SELECT id, date, total, payment_method FROM sales`;
-  const params = [];
+  let sql = `SELECT id, date, total, payment_method FROM sales WHERE tenant_id=?`;
+  const params = [req.tenant.id];
 
   if (from && to) {
-    sql += ` WHERE substr(date,1,10) BETWEEN ? AND ?`;
+    sql += ` AND substr(date,1,10) BETWEEN ? AND ?`;
     params.push(from, to);
   } else if (from) {
-    sql += ` WHERE substr(date,1,10) >= ?`;
+    sql += ` AND substr(date,1,10) >= ?`;
     params.push(from);
   } else if (to) {
-    sql += ` WHERE substr(date,1,10) <= ?`;
+    sql += ` AND substr(date,1,10) <= ?`;
     params.push(to);
   }
 
@@ -519,10 +739,13 @@ app.get("/api/sales", auth, requireRole("admin", "cajero"), async (req, res) => 
   res.json(rows);
 });
 
-app.get("/api/sales/:id", auth, requireRole("admin", "cajero"), async (req, res) => {
+app.get("/api/sales/:id", auth, requireRole("admin", "cajero", "superadmin"), requireTenant, async (req, res) => {
   const id = Number(req.params.id);
 
-  const sale = await get(`SELECT id, date, total, payment_method FROM sales WHERE id=?`, [id]);
+  const sale = await get(
+    `SELECT id, date, total, payment_method FROM sales WHERE id=? AND tenant_id=?`,
+    [id, req.tenant.id]
+  );
   if (!sale) return res.status(404).json({ error: "Venta no encontrada" });
 
   const items = await all(
@@ -538,65 +761,56 @@ app.get("/api/sales/:id", auth, requireRole("admin", "cajero"), async (req, res)
 });
 
 // =========================
-// ALERTAS / DASHBOARD
+// ALERTAS / DASHBOARD (por tenant)
 // =========================
-app.get("/api/alerts/expiring", auth, requireRole("admin", "cajero"), async (req, res) => {
+app.get("/api/alerts/expiring", auth, requireRole("admin", "cajero", "superadmin"), requireTenant, async (req, res) => {
   const days = Math.max(0, Number(req.query.days || 30));
   const rows = await all(
     `SELECT id, code, name, stock, expiry_date, location
      FROM products
-     WHERE expiry_date IS NOT NULL AND expiry_date != ''
+     WHERE tenant_id=?
+       AND expiry_date IS NOT NULL AND expiry_date != ''
        AND julianday(expiry_date) - julianday(date('now')) <= ?
      ORDER BY date(expiry_date) ASC`,
-    [String(days)]
+    [req.tenant.id, String(days)]
   );
   res.json({ days, count: rows.length, items: rows });
 });
 
-app.get("/api/alerts/low-stock", auth, requireRole("admin", "cajero"), async (req, res) => {
+app.get("/api/alerts/low-stock", auth, requireRole("admin", "cajero", "superadmin"), requireTenant, async (req, res) => {
   const threshold = Math.max(0, Number(req.query.min ?? req.query.threshold ?? 5));
   const rows = await all(
     `SELECT id, code, name, stock, location, expiry_date
      FROM products
-     WHERE stock <= ?
+     WHERE tenant_id=? AND stock <= ?
      ORDER BY stock ASC, name ASC`,
-    [threshold]
+    [req.tenant.id, threshold]
   );
   res.json({ threshold, count: rows.length, items: rows });
 });
 
-app.get("/api/dashboard/today", auth, requireRole("admin", "cajero"), async (_req, res) => {
-  const row = await get(
-    `SELECT COUNT(*) AS count, COALESCE(SUM(total),0) AS total
-     FROM sales
-     WHERE substr(date,1,10) = date('now')`
-  );
-
-  res.json({
-    date: new Date().toISOString().slice(0, 10),
-    count: Number(row?.count || 0),
-    total: Number(row?.total || 0),
-  });
-});
-
-app.get("/api/dashboard/summary", auth, requireRole("admin", "cajero"), async (req, res) => {
+app.get("/api/dashboard/summary", auth, requireRole("admin", "cajero", "superadmin"), requireTenant, async (req, res) => {
   const low = Math.max(0, Number(req.query.low ?? req.query.threshold ?? 5));
   const days = Math.max(0, Number(req.query.days ?? 30));
 
   const today = await get(
     `SELECT COUNT(*) AS count, COALESCE(SUM(total),0) AS total
      FROM sales
-     WHERE substr(date,1,10) = date('now')`
+     WHERE tenant_id=? AND substr(date,1,10) = date('now')`,
+    [req.tenant.id]
   );
 
-  const lowRow = await get(`SELECT COUNT(*) AS c FROM products WHERE stock <= ?`, [low]);
+  const lowRow = await get(
+    `SELECT COUNT(*) as c FROM products WHERE tenant_id=? AND stock <= ?`,
+    [req.tenant.id, low]
+  );
 
   const expRow = await get(
-    `SELECT COUNT(*) AS c
+    `SELECT COUNT(*) as c
      FROM products
-     WHERE expiry_date IS NOT NULL AND expiry_date != ''
+     WHERE tenant_id=? AND expiry_date IS NOT NULL AND expiry_date != ''
        AND julianday(expiry_date) - julianday(date('now')) <= ?`,
-    [String(days)]
+    [req.tenant.id, String(days)]
   );
 
   res.json({
@@ -607,8 +821,7 @@ app.get("/api/dashboard/summary", auth, requireRole("admin", "cajero"), async (r
 });
 
 // ===============================
-// INFORMACIÓN FARMACÉUTICA (OpenFDA) + LibreTranslate (sin AWS)
-// GET /api/drug-info?name=ibuprofeno&lang=es|en
+// OpenFDA + LibreTranslate (por tenant)
 // ===============================
 const DRUG_CACHE = new Map();
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -626,11 +839,10 @@ function cacheSet(key, value) {
   DRUG_CACHE.set(key, { expires: Date.now() + CACHE_TTL_MS, value });
 }
 
-app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res) => {
+app.get("/api/drug-info", auth, requireRole("admin", "cajero", "superadmin"), requireTenant, async (req, res) => {
   try {
-    const rawName = String(req.query.name || "").trim();
-    const lang = String(req.query.lang || "en").trim().toLowerCase(); // default EN
-
+    const rawName = cleanText(req.query.name);
+    const lang = cleanText(req.query.lang || "en").toLowerCase();
     if (!rawName) return res.status(400).json({ error: "Falta name" });
 
     const safeLang = lang === "es" ? "es" : "en";
@@ -679,11 +891,9 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
     let searched_term = rawName;
     let query_translated_from = null;
 
-    // intento 1: tal cual
     tried.push(rawName);
     foundPack = await searchOpenFDA(rawName);
 
-    // intento 1.1: sin acentos
     const noAcc = stripAccents(rawName);
     if (!foundPack && noAcc && noAcc !== rawName) {
       tried.push(noAcc);
@@ -691,7 +901,6 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
       if (foundPack) searched_term = noAcc;
     }
 
-    // intento 2: si piden ES y no encontró → traducir query ES->EN y reintentar
     if (!foundPack && safeLang === "es") {
       const enTerm = await translateEsToEn(rawName);
       if (enTerm && enTerm.toLowerCase() !== rawName.toLowerCase()) {
@@ -727,9 +936,7 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
       query_translated_from,
       brand_name: pick(d.openfda?.brand_name) || rawName,
       generic_name: pick(d.openfda?.generic_name) || "",
-      active_ingredient: cleanText(
-        pick(d.active_ingredient) || pick(d.openfda?.substance_name) || ""
-      ),
+      active_ingredient: cleanText(pick(d.active_ingredient) || pick(d.openfda?.substance_name) || ""),
       indications: cleanText(pick(d.indications_and_usage) || ""),
       dosage: cleanText(pick(d.dosage_and_administration) || ""),
       warnings: cleanText(pick(d.warnings) || pick(d.boxed_warning) || ""),
@@ -744,18 +951,8 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
       tried,
     };
 
-    // si piden ES: traducir campos largos con LibreTranslate
     if (safeLang === "es") {
-      const fieldsToTranslate = [
-        "indications",
-        "dosage",
-        "warnings",
-        "contraindications",
-        "interactions",
-        "pregnancy",
-        "storage",
-      ];
-
+      const fieldsToTranslate = ["indications","dosage","warnings","contraindications","interactions","pregnancy","storage"];
       let okAll = true;
       for (const k of fieldsToTranslate) {
         const original = out[k];
@@ -764,7 +961,6 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
         out[k] = tr;
         if (cleanText(tr) === cleanText(original)) okAll = false;
       }
-
       out.translated_by = "libretranslate";
       out.translation_ok = okAll;
     }
@@ -777,27 +973,27 @@ app.get("/api/drug-info", auth, requireRole("admin", "cajero"), async (req, res)
   }
 });
 
-// ==================== EXPORT EXCEL ====================
-
+// ==================== EXPORT EXCEL (por tenant) ====================
 function setXlsxDownload(res, filename) {
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 }
 
-// ✅ A) Exportar Inventario
-app.get("/api/export/inventory.xlsx", auth, requireRole("admin", "cajero"), async (_req, res) => {
+app.get("/api/export/inventory.xlsx", auth, requireRole("admin", "cajero", "superadmin"), requireTenant, async (_req, res) => {
   try {
     const rows = await all(
       `SELECT code, name, lab, location, stock, buy_price, sell_price, expiry_date
        FROM products
-       ORDER BY name ASC`
+       WHERE tenant_id=?
+       ORDER BY name ASC`,
+      [res.req.tenant.id]
     );
 
     const wb = new ExcelJS.Workbook();
-    wb.creator = "POS Farmacia";
+    wb.creator = "POS Farmacia SaaS";
     wb.created = new Date();
-
     const ws = wb.addWorksheet("Inventario");
+
     ws.columns = [
       { header: "Código", key: "code", width: 14 },
       { header: "Producto", key: "name", width: 32 },
@@ -818,7 +1014,6 @@ app.get("/api/export/inventory.xlsx", auth, requireRole("admin", "cajero"), asyn
 
     for (const r of rows) {
       let estado = "OK";
-
       if (r.expiry_date) {
         const d = new Date(r.expiry_date + "T00:00:00");
         if (!isNaN(d.getTime())) {
@@ -844,7 +1039,6 @@ app.get("/api/export/inventory.xlsx", auth, requireRole("admin", "cajero"), asyn
 
     ws.getColumn("buy_price").numFmt = '"S/ "0.00';
     ws.getColumn("sell_price").numFmt = '"S/ "0.00';
-
     ws.autoFilter = { from: "A1", to: "I1" };
     ws.views = [{ state: "frozen", ySplit: 1 }];
 
@@ -859,23 +1053,24 @@ app.get("/api/export/inventory.xlsx", auth, requireRole("admin", "cajero"), asyn
   }
 });
 
-// ✅ B) Exportar Ventas por rango
-app.get("/api/export/sales.xlsx", auth, requireRole("admin", "cajero"), async (req, res) => {
+app.get("/api/export/sales.xlsx", auth, requireRole("admin", "cajero", "superadmin"), requireTenant, async (req, res) => {
   try {
-    const from = String(req.query.from || "").trim();
-    const to = String(req.query.to || "").trim();
+    const from = cleanText(req.query.from);
+    const to = cleanText(req.query.to);
     if (!from || !to) return res.status(400).json({ error: "Faltan from/to" });
+
+    const tenant_id = req.tenant.id;
 
     const sales = await all(
       `SELECT id, date, total, payment_method
        FROM sales
-       WHERE substr(date,1,10) BETWEEN ? AND ?
+       WHERE tenant_id=? AND substr(date,1,10) BETWEEN ? AND ?
        ORDER BY id DESC`,
-      [from, to]
+      [tenant_id, from, to]
     );
 
     const wb = new ExcelJS.Workbook();
-    wb.creator = "POS Farmacia";
+    wb.creator = "POS Farmacia SaaS";
     wb.created = new Date();
 
     const ws = wb.addWorksheet("Ventas");
@@ -885,7 +1080,6 @@ app.get("/api/export/sales.xlsx", auth, requireRole("admin", "cajero"), async (r
       { header: "Pago", key: "payment_method", width: 14 },
       { header: "Total", key: "total", width: 12 },
     ];
-
     ws.getRow(1).font = { bold: true };
     ws.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
 
@@ -897,7 +1091,6 @@ app.get("/api/export/sales.xlsx", auth, requireRole("admin", "cajero"), async (r
         total: Number(s.total || 0),
       });
     }
-
     ws.getColumn("total").numFmt = '"S/ "0.00';
     ws.autoFilter = { from: "A1", to: "D1" };
     ws.views = [{ state: "frozen", ySplit: 1 }];
@@ -912,7 +1105,6 @@ app.get("/api/export/sales.xlsx", auth, requireRole("admin", "cajero"), async (r
       { header: "P.Unit", key: "price_unit", width: 12 },
       { header: "Sub", key: "subtotal", width: 12 },
     ];
-
     ws2.getRow(1).font = { bold: true };
     ws2.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
 
@@ -921,9 +1113,9 @@ app.get("/api/export/sales.xlsx", auth, requireRole("admin", "cajero"), async (r
        FROM sale_items si
        JOIN sales s ON s.id = si.sale_id
        JOIN products p ON p.id = si.product_id
-       WHERE substr(s.date,1,10) BETWEEN ? AND ?
+       WHERE s.tenant_id=? AND substr(s.date,1,10) BETWEEN ? AND ?
        ORDER BY s.id DESC`,
-      [from, to]
+      [tenant_id, from, to]
     );
 
     for (const it of items) {
@@ -955,13 +1147,30 @@ app.get("/api/export/sales.xlsx", auth, requireRole("admin", "cajero"), async (r
 });
 
 // =========================
+// AUDIT (solo admin/superadmin)
+// =========================
+app.get("/api/audit", auth, requireRole("admin", "superadmin"), requireTenant, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 200), 500);
+  const rows = await all(
+    `SELECT id, tenant_id, user_id, action, entity, entity_id, metadata, created_at
+     FROM audit_log
+     WHERE tenant_id=?
+     ORDER BY id DESC
+     LIMIT ?`,
+    [req.tenant.id, limit]
+  );
+  res.json(rows);
+});
+
+// =========================
 // START
 // =========================
 const PORT = Number(process.env.PORT || 3000);
 
 init().then(() => {
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`✅ Backend corriendo en http://0.0.0.0:${PORT}`);
+    console.log(`✅ Backend SaaS corriendo en http://0.0.0.0:${PORT}`);
     console.log(`✅ LibreTranslate URL: ${LIBRETRANSLATE_URL}`);
+    console.log(`✅ Login SaaS: enviar tenant_slug en /api/login o header X-Tenant-Slug en requests`);
   });
 });
