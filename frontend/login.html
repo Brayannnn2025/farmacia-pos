@@ -15,15 +15,23 @@
 <div class="container">
   <div class="card" style="max-width:480px;margin:40px auto;">
     <h2>Iniciar sesión</h2>
-    <p class="small">Usuario por defecto: <b>admin</b> · Clave: <b>admin123</b></p>
+
+    <!-- ✅ Nota: ahora el login pide SLUG -->
+    <p class="small">
+      Farmacia (slug) ejemplo: <b>farmacia-sanmartin</b> o <b>default</b><br/>
+      Usuario por defecto (tenant default): <b>admin</b> · Clave: <b>admin123</b>
+    </p>
 
     <div class="row">
+      <!-- ✅ NUEVO: tenant slug -->
+      <input id="tenant" placeholder="Farmacia (slug) ej: farmacia-sanmartin" autocomplete="off" />
+
       <input id="username" placeholder="Usuario" autocomplete="username"/>
       <input id="password" placeholder="Contraseña" type="password" autocomplete="current-password"/>
     </div>
 
     <div class="row" style="margin-top:10px;">
-      <button id="btnLogin">Entrar</button>
+      <button id="btnLogin" type="button">Entrar</button>
     </div>
 
     <p id="msg" class="small" style="color:#ef4444"></p>
@@ -41,16 +49,30 @@
     $("btnLogin").textContent = "Entrando...";
 
     try{
+      const tenant_slug = ($("tenant")?.value || "").trim(); // ✅ NUEVO
       const username = $("username").value.trim();
       const password = $("password").value.trim();
 
+      // Validación rápida (superadmin no necesita slug)
+      if (username !== "superadmin" && !tenant_slug) {
+        throw new Error("Escribe la farmacia (slug). Ej: default o farmacia-sanmartin");
+      }
+
       const r = await api("/api/login", {
         method:"POST",
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify({ tenant_slug, username, password })
       });
 
       localStorage.setItem("token", r.token);
       setUser(r.user);
+
+      // ✅ Guardamos tenant_slug para todas las requests (si no es superadmin)
+      if (r.user?.role !== "superadmin") {
+        localStorage.setItem("tenant_slug", tenant_slug);
+      } else {
+        // si es superadmin, limpiamos tenant para evitar conflictos
+        localStorage.removeItem("tenant_slug");
+      }
 
       // ✅ redirige según rol
       location.href = homeForRole();
@@ -65,9 +87,15 @@
 
   $("btnLogin").onclick = doLogin;
 
-  // Enter para login rápido
-  $("password").addEventListener("keydown", (ev)=>{
-    if(ev.key === "Enter") doLogin();
+  // Enter para login rápido:
+  // - si estás en password, entra
+  // - si estás en tenant o username, también entra
+  ["tenant","username","password"].forEach(id=>{
+    const el = $(id);
+    if (!el) return;
+    el.addEventListener("keydown", (ev)=>{
+      if(ev.key === "Enter") doLogin();
+    });
   });
 </script>
 </body>
